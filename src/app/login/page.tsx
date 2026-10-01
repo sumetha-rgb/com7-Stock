@@ -86,6 +86,10 @@ const useLite = () => useContext(LiteContext);
 
 const REMEMBER_KEY = "stock-req-remember-username";
 
+/** ปุ่มทดสอบมุมขวาบน (กลางวัน / กลางคืน / Auto / จำลองข้อความ)
+ *  false = ซ่อน (ฟังก์ชันและโค้ดยังอยู่ครบ) | true = แสดง */
+const SHOW_TEST_BUTTONS = false;
+
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
@@ -1822,42 +1826,44 @@ export default function LoginPage() {
           label="กำลังเข้าสู่ระบบ..."
         />
 
-        {/* ปุ่มทดสอบ */}
-        <div className="fixed top-4 right-4 z-50 flex flex-wrap gap-2 justify-end max-w-[280px]">
-          <button
-            onClick={() => setForceDay(true)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium shadow transition ${forceDay === true
-                ? "bg-emerald-500 text-white"
-                : "bg-white/90 text-slate-700 hover:bg-white"
-              }`}
-          >
-            ☀️ กลางวัน
-          </button>
-          <button
-            onClick={() => setForceDay(false)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium shadow transition ${forceDay === false
-                ? "bg-slate-600 text-white"
-                : "bg-white/90 text-slate-700 hover:bg-white"
-              }`}
-          >
-            🌙 กลางคืน
-          </button>
-          <button
-            onClick={() => setForceDay(null)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium shadow transition ${forceDay === null
-                ? "bg-blue-500 text-white"
-                : "bg-white/90 text-slate-700 hover:bg-white"
-              }`}
-          >
-            Auto
-          </button>
-          <button
-            onClick={() => setShowAfterWorkMsg(true)}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium shadow bg-amber-100 text-amber-800 hover:bg-amber-200 transition"
-          >
-            💬 จำลองข้อความ
-          </button>
-        </div>
+        {/* ปุ่มทดสอบ (เปิด/ปิดที่ SHOW_TEST_BUTTONS ด้านบนไฟล์) */}
+        {SHOW_TEST_BUTTONS && (
+          <div className="fixed top-4 right-4 z-50 flex flex-wrap gap-2 justify-end max-w-[280px]">
+            <button
+              onClick={() => setForceDay(true)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium shadow transition ${forceDay === true
+                  ? "bg-emerald-500 text-white"
+                  : "bg-white/90 text-slate-700 hover:bg-white"
+                }`}
+            >
+              ☀️ กลางวัน
+            </button>
+            <button
+              onClick={() => setForceDay(false)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium shadow transition ${forceDay === false
+                  ? "bg-slate-600 text-white"
+                  : "bg-white/90 text-slate-700 hover:bg-white"
+                }`}
+            >
+              🌙 กลางคืน
+            </button>
+            <button
+              onClick={() => setForceDay(null)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium shadow transition ${forceDay === null
+                  ? "bg-blue-500 text-white"
+                  : "bg-white/90 text-slate-700 hover:bg-white"
+                }`}
+            >
+              Auto
+            </button>
+            <button
+              onClick={() => setShowAfterWorkMsg(true)}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium shadow bg-amber-100 text-amber-800 hover:bg-amber-200 transition"
+            >
+              💬 จำลองข้อความ
+            </button>
+          </div>
+        )}
 
         {/* ข้อความหลังเลิกงาน */}
         <AfterWorkMessage
