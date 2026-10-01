@@ -1,0 +1,125 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-noto-sans-thai), "Noto Sans Thai", ui-sans-serif, system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+html,
+body,
+button,
+input,
+select,
+textarea {
+  font-family: var(--font-noto-sans-thai), "Noto Sans Thai", ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-noto-sans-thai), "Noto Sans Thai", ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Soft, subtle gradient wash behind the whole app instead of flat white,
+   so pages don't feel empty. Cards/panels sit on top with their own
+   solid white background, so this only shows through the page margins. */
+body {
+  background-color: #f4f7fb;
+  background-image:
+    /* soft color blobs in the brand green + a cool teal, top-left and
+       middle-right, to break up the empty white space behind cards */
+    radial-gradient(720px 480px at 8% -5%, rgba(91, 186, 71, 0.14), transparent 60%),
+    radial-gradient(640px 520px at 95% 30%, rgba(59, 160, 160, 0.12), transparent 60%),
+    radial-gradient(900px 700px at 50% 120%, rgba(91, 186, 71, 0.08), transparent 60%);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+
+/* Fade-in for the full-screen page-transition overlay (login, save/submit). */
+@keyframes overlayFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Bars variant — admin/dashboard overlay only. */
+@keyframes barGrow {
+  0%, 100% { height: 10px; opacity: .6; }
+  50%      { height: 52px; opacity: 1; }
+}
+
+/* Avatars variant — admin2/users overlay only. */
+@keyframes swapA {
+  0%, 100% { left: 0; }
+  50%      { left: 44px; }
+}
+@keyframes swapB {
+  0%, 100% { left: 44px; }
+  50%      { left: 0; }
+}
+
+/* Cardboard box hopping across the loading track, then fading out at the end. Loops. */
+@keyframes hopAcross {
+  0%   { left: 0%;   transform: translateY(0) rotate(0deg);   opacity: 1; }
+  8%   {             transform: translateY(-22px) rotate(14deg); }
+  16%  { left: 23%;  transform: translateY(0) rotate(0deg); }
+  24%  {             transform: translateY(-22px) rotate(-14deg); }
+  32%  { left: 46%;  transform: translateY(0) rotate(0deg); }
+  40%  {             transform: translateY(-22px) rotate(14deg); }
+  48%  { left: 69%;  transform: translateY(0) rotate(-10deg);   opacity: 1; }
+  58%  { left: 90%;  transform: translateY(-16px) rotate(6deg); opacity: 1; }
+  68%  { left: 100%; transform: translateY(-4px) rotate(0deg);  opacity: 0; }
+  100% { left: 100%; opacity: 0; }
+}
+
+/* Hides the scrollbar visually while keeping the element scrollable — used
+   as a fallback for the sidebar nav on short viewports where the (now
+   compact) link list still doesn't quite fit. */
+.no-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none; /* Chrome/Safari */
+}
+
+/* ---------- Mobile polish ---------- */
+@keyframes drawerIn {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes sheetUp {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+.animate-drawer-in { animation: drawerIn 0.25s ease-out; }
+.animate-fade-in   { animation: fadeIn 0.2s ease-out; }
+.animate-sheet-up  { animation: sheetUp 0.25s ease-out; }
+
+@media (max-width: 767px) {
+  /* 16px inputs stop iOS Safari from zooming the page on focus */
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
