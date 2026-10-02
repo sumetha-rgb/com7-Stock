@@ -7,6 +7,9 @@ export default withAuth(
     const path = req.nextUrl.pathname;
     const role = token?.role as string | undefined;
 
+    // /api/employees/sync ตรวจสิทธิ์เองในตัว route (รองรับ Vercel Cron ที่ไม่มี session)
+    if (path === "/api/employees/sync") return NextResponse.next();
+
     // API calls without a session get JSON 401 (not an HTML redirect that
     // makes res.json() throw on the client).
     if (!token && path.startsWith("/api/")) {

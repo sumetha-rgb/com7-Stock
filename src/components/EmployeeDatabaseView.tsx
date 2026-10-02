@@ -58,6 +58,8 @@ function StatusBadge({ state }: { state: OverallReceiveState }) {
 export function EmployeeDatabaseView({ canImport }: { canImport: boolean }) {
   const [sheetUrl, setSheetUrl] = useState("");
   const [syncing, setSyncing] = useState(false);
+  // true เมื่อ server ตั้ง NEWCOMER_SHEET_URL ไว้ → ซิงค์เองได้ ไม่ต้องวางลิงก์
+  const [autoConfigured, setAutoConfigured] = useState(false);
   const [lastSyncedCount, setLastSyncedCount] = useState<number | null>(null);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
@@ -108,19 +110,48 @@ export function EmployeeDatabaseView({ canImport }: { canImport: boolean }) {
     loadItemStatus();
   }, []);
 
+  // เปิดหน้านี้แล้วซิงค์จากลิงก์ที่ตั้งไว้ให้อัตโนมัติ (เงียบๆ ไม่ต้องกดอะไร)
+  useEffect(() => {
+    if (!canImport) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/employees/sync", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled || !data.configured) return;
+        setAutoConfigured(true);
+        if (!data.skipped) {
+          setLastSyncedCount(data.imported);
+          await Promise.all([loadEmployees(), loadItemStatus()]);
+        }
+      } catch {
+        /* ซิงค์อัตโนมัติพลาด → ใช้ข้อมูลเดิมในระบบ ไม่รบกวนผู้ใช้ */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canImport]);
+
   async function handleSync(e: React.FormEvent) {
     e.preventDefault();
-    if (!sheetUrl.trim()) {
+    // ไม่ได้วางลิงก์ + มีลิงก์ที่ตั้งไว้ใน server → ใช้ลิงก์นั้น
+    const useSaved = !sheetUrl.trim() && autoConfigured;
+    if (!sheetUrl.trim() && !useSaved) {
       toast.error("กรุณาวางลิงก์ Google Sheet ก่อน");
       return;
     }
     setSyncing(true);
     try {
-      const res = await fetch("/api/employees/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sheetUrl }),
-      });
+      const res = useSaved
+        ? await fetch("/api/employees/sync?force=1", { cache: "no-store" })
+        : await fetch("/api/employees/import", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sheetUrl }),
+          });
       const data = await res.json();
       if (res.ok) {
         toast.success(`ดึงข้อมูลสำเร็จ (${data.imported} รายการ)`);
@@ -249,6 +280,13 @@ export function EmployeeDatabaseView({ canImport }: { canImport: boolean }) {
               ตำแหน่ง, หน่วยงาน (ไม่บังคับ: รหัสพนักงาน, C Level) (ต้องแชร์แบบ &quot;ทุกคนที่มีลิงก์ดูได้&quot;)
             </p>
 
+            {autoConfigured && (
+              <p className="text-xs text-sky-800 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2 mb-3">
+                🔄 ตั้งลิงก์ไว้แล้ว ระบบซิงค์ให้อัตโนมัติทุกครั้งที่เปิดหน้านี้ (และตามรอบเวลา) — ไม่ต้องวางลิงก์ใหม่
+                กด &quot;ดึงข้อมูล&quot; ถ้าอยากอัปเดตทันที หรือวางลิงก์อื่นเพื่อใช้ชั่วคราว
+              </p>
+            )}
+
             <form
               onSubmit={handleSync}
               className="bg-white border rounded-xl p-4 mb-6 shadow-sm flex flex-col sm:flex-row gap-2"
@@ -258,7 +296,7 @@ export function EmployeeDatabaseView({ canImport }: { canImport: boolean }) {
                 <input
                   value={sheetUrl}
                   onChange={(e) => setSheetUrl(e.target.value)}
-                  placeholder="วางลิงก์ Google Sheet ที่นี่ (https://docs.google.com/spreadsheets/d/...)"
+                  placeholder={autoConfigured ? "เว้นว่างไว้ = ใช้ลิงก์ที่ตั้งไว้" : "วางลิงก์ Google Sheet ที่นี่ (https://docs.google.com/spreadsheets/d/...)"}
                   className="w-full h-11 md:h-auto pl-9 pr-3 py-2 border rounded-lg text-sm bg-white"
                 />
               </div>
