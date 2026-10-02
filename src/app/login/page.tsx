@@ -22,6 +22,7 @@ import {
   type Variants,
 } from "framer-motion";
 import { PageTransitionOverlay } from "@/components/PageTransitionOverlay";
+import { NightSky } from "@/components/NightSky";
 
 /* ------------------------------------------------------------------ */
 /*  Hooks: Day/Night, Page Visibility, Lite mode                       */
@@ -88,7 +89,7 @@ const REMEMBER_KEY = "stock-req-remember-username";
 
 /** ปุ่มทดสอบมุมขวาบน (กลางวัน / กลางคืน / Auto / จำลองข้อความ)
  *  false = ซ่อน (ฟังก์ชันและโค้ดยังอยู่ครบ) | true = แสดง */
-const SHOW_TEST_BUTTONS = false;
+const SHOW_TEST_BUTTONS = true;
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -777,8 +778,9 @@ function FallingItemsManager({
 
   if (reduce) return null;
 
+  // fi-night: ให้ NightSky.tsx รีสีของที่ตกลงมา (เขียวเข้ม → ม่วงอ่อนเรืองแสง) เฉพาะกลางคืน
   return (
-    <>
+    <div className={isDay ? "fi-layer" : "fi-layer fi-night"}>
       {items.map((item) => (
         <FallingItemView
           key={item.id}
@@ -789,7 +791,7 @@ function FallingItemsManager({
           errorShake={errorShake}
         />
       ))}
-    </>
+    </div>
   );
 }
 
@@ -1439,6 +1441,10 @@ function ForkliftEvent({
 /*  ข้อความหลังเลิกงาน (นับถอยหลัง 10 วิ)                              */
 /* ------------------------------------------------------------------ */
 
+// 22 ต.ค. 2569 พ.ศ. = 2026 ค.ศ. (เดือนใน JS นับจาก 0 → ตุลาคม = 9)
+const AFTERWORK_START = new Date(2026, 9, 22, 0, 0, 0).getTime();
+const AFTERWORK_KEY = "stock-req-afterwork-msg-v2";
+
 function AfterWorkMessage({
   forceShow,
   onClose,
@@ -1457,16 +1463,29 @@ function AfterWorkMessage({
       return;
     }
 
+    // เริ่มแสดงตั้งแต่ 22 ต.ค. 2569 (พ.ศ.) = 2026-10-22 เวลา 00:00 เป็นต้นไป
+    if (Date.now() < AFTERWORK_START) return;
+
     const hour = new Date().getHours();
     if (hour < 18) return;
 
-    const key = "stock-req-afterwork-msg";
-    if (localStorage.getItem(key)) return;
+    // แสดงครั้งเดียวต่อผู้ใช้/เบราว์เซอร์ แล้วไม่แสดงอีกเลย
+    let seen = false;
+    try {
+      seen = !!localStorage.getItem(AFTERWORK_KEY);
+    } catch {
+      // อ่าน storage ไม่ได้ → ไม่แสดง (กันเด้งซ้ำทุกครั้ง)
+      return;
+    }
+    if (seen) return;
 
     const timer = setTimeout(() => {
+      // บันทึกตอนแสดงทันที: ต่อให้ปิดแท็บก่อนครบ 10 วิ ก็ไม่เด้งอีก
+      try {
+        localStorage.setItem(AFTERWORK_KEY, String(Date.now()));
+      } catch {}
       setVisible(true);
       setCountdown(10);
-      localStorage.setItem(key, "1");
     }, 2500);
 
     return () => clearTimeout(timer);
@@ -1511,7 +1530,7 @@ function AfterWorkMessage({
         <div className="px-5 py-5 text-center">
           <div className="text-2xl mb-2">🌙</div>
           <p className="text-slate-700 text-[15px] leading-relaxed font-medium">
-            เลยเวลาแล้วงานนะครับพี่ๆ
+            เลยเวลางานนะครับพี่ๆ
             <br />
             อย่าลืมพักผ่อนครับ
           </p>
@@ -1555,13 +1574,18 @@ function Background({
   errorShake: boolean;
 }) {
   const lite = useLite();
+  const visible = usePageVisible();
 
   return (
     <div aria-hidden className="pointer-events-none fixed inset-0 overflow-hidden">
-      <div className="absolute inset-0 bg-gradient-to-br from-slate-50 via-white to-emerald-50/70" />
+      {isDay ? (
+        <div className="absolute inset-0 bg-gradient-to-br from-slate-50 via-white to-emerald-50/70" />
+      ) : (
+        <NightSky reduce={reduce} lite={lite} paused={!visible} />
+      )}
 
-      {/* ลูกบอลสีฟุ้ง (blur-3xl หนักมาก) ข้ามในโหมดเบา */}
-      {!lite && (
+      {/* ลูกบอลสีฟุ้ง (blur-3xl หนักมาก) เฉพาะกลางวัน และข้ามในโหมดเบา */}
+      {isDay && !lite && (
         <>
           <motion.div
             className="absolute -top-32 -left-28 h-[26rem] w-[26rem] rounded-full bg-emerald-200/25 blur-3xl"
@@ -2085,7 +2109,9 @@ export default function LoginPage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: successMode ? 0 : 1 }}
             transition={{ delay: 0.8 }}
-            className="mt-6 text-center text-sm text-slate-500 font-medium"
+            className={`mt-6 text-center text-sm font-medium ${
+              isDay ? "text-slate-500" : "text-violet-200/90"
+            }`}
           >
             ติดต่อผู้ดูแลระบบหากลืมรหัสผ่าน
           </motion.p>

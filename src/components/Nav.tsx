@@ -93,7 +93,7 @@ export function Nav() {
   ];
 
   const adminLinks = [
-    { href: "/admin/dashboard", label: "Dashborad" },
+    { href: "/admin/dashboard", label: "Dashboard" },
     { href: "/admin/products", label: "สินค้า" },
     { href: "/admin/settings/onboarding-bundles", label: "ชุดของพนักงานใหม่" },
     { href: "/admin/employees", label: "พนักงานใหม่" },

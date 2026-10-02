@@ -16,8 +16,64 @@ type Mode = "general" | "onboarding" | "stock" | "activity";
 // activity tab, and it is hidden from the normal onboarding tab.
 const isActivityBundle = (b: { bundleName: string }) => /กิจกรรม|activity/i.test(b.bundleName);
 
+/** การ์ดดูสต็อก (ดูอย่างเดียว) ใช้ทั้งสินค้าในชุดและสินค้าทั่วไป */
+function StockCard({ p, fallbackName }: { p?: Product; fallbackName: string }) {
+  const stock = p?.quantity ?? 0;
+  const outOfStock = stock <= 0;
+  const lowStock = !outOfStock && !!p && stock <= p.lowStockThreshold;
+  const name = p?.name || fallbackName;
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+      <div className="relative aspect-[5/4] bg-white overflow-hidden border-b border-slate-100">
+        {p?.imageUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={p.imageUrl}
+            alt={name}
+            className={`absolute inset-0 w-full h-full object-contain p-1.5 ${
+              outOfStock ? "grayscale opacity-50" : ""
+            }`}
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-slate-300">
+            <Package className="w-10 h-10" />
+          </div>
+        )}
+        {lowStock && (
+          <span className="absolute top-2 right-2 bg-amber-500 text-white text-[11px] font-semibold px-2 py-0.5 rounded-full shadow">
+            เหลือน้อย!
+          </span>
+        )}
+        {outOfStock && (
+          <span className="absolute top-2 right-2 bg-red-500 text-white text-[11px] font-semibold px-2 py-0.5 rounded-full shadow">
+            หมด
+          </span>
+        )}
+      </div>
+      <div className="p-3.5">
+        <span className="inline-block max-w-full truncate text-xs font-medium text-slate-500 bg-slate-100 rounded-full px-2.5 py-0.5 mb-2">
+          {p?.category || "ทั่วไป"}
+        </span>
+        <h3 className="font-bold text-base text-slate-900 leading-snug tracking-tight line-clamp-1 mb-1.5">
+          {name}
+        </h3>
+        <p className="text-[13px] text-slate-500 flex items-baseline gap-1.5">
+          คงเหลือ{" "}
+          <span
+            className={`text-lg font-extrabold leading-none ${
+              outOfStock ? "text-red-500" : lowStock ? "text-amber-600" : "text-emerald-700"
+            }`}
+          >
+            {formatNumber(stock)} {p?.unit || ""}
+          </span>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function RequisitionPage() {
-  const [mode, setMode] = useState<Mode>("general");
+  const [mode, setMode] = useState<Mode>("stock"); // แท็บแรกสุด
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -81,6 +137,30 @@ export default function RequisitionPage() {
   useEffect(() => {
     loadProducts();
   }, [loadProducts]);
+
+  // รหัสสินค้าที่อยู่ในชุดใดชุดหนึ่ง (เบิกสำหรับพนักงานใหม่ / เบิกสำหรับกิจกรรม)
+  // → ไม่นำมาแสดงในหน้า "เบิกของทั่วไป". null = ยังโหลดไม่เสร็จ (กันสินค้าในชุดแวบขึ้นมาก่อน)
+  const [bundledIds, setBundledIds] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/bundles?include=items", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        const ids = new Set<string>();
+        if (Array.isArray(data)) {
+          for (const x of data) for (const it of x.items || []) ids.add(it.productId);
+        }
+        setBundledIds(ids);
+      })
+      .catch(() => {
+        // โหลดชุดไม่ได้ → แสดงสินค้าทั้งหมดตามเดิม ดีกว่าหน้าว่าง
+        if (!cancelled) setBundledIds(new Set());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const loadCategories = useCallback(async () => {
     setCategoriesLoading(true);
@@ -179,6 +259,12 @@ export default function RequisitionPage() {
     { bundle: OnboardingBundle; items: OnboardingBundleItem[] }[]
   >([]);
   const [stockLoading, setStockLoading] = useState(false);
+  // สินค้าที่ไม่ได้อยู่ในชุดที่เปิดใช้งานชุดใดเลย
+  const looseStockProducts = useMemo(() => {
+    const ids = new Set<string>();
+    for (const { items } of stockBundles) for (const it of items) ids.add(it.productId);
+    return products.filter((p) => !ids.has(p.id));
+  }, [stockBundles, products]);
 
   useEffect(() => {
     if (mode !== "stock") return;
@@ -240,26 +326,25 @@ export default function RequisitionPage() {
   // Search box for the onboarding item list
   const [itemSearch, setItemSearch] = useState("");
 
-  // Bundle items first (in bundle order), then every other product.
-  const onboardingList = useMemo(() => {
-    const inBundle = new Set(bundleItems.map((b) => b.productId));
-    const bundlePart = bundleItems.map((b) => ({
-      productId: b.productId,
-      productName: products.find((p) => p.id === b.productId)?.name || b.productName,
-      defaultQty: b.quantityPerSet as number | null,
-      stock: products.find((p) => p.id === b.productId)?.quantity ?? 0,
-    }));
-    const otherPart = products
-      .filter((p) => !inBundle.has(p.id))
-      .map((p) => ({ productId: p.id, productName: p.name, defaultQty: null, stock: p.quantity }));
-    return [...bundlePart, ...otherPart];
-  }, [bundleItems, products]);
-
-  const filteredProducts = products.filter(
-    (p) =>
-      p.name.toLowerCase().includes(search.toLowerCase()) ||
-      p.category.toLowerCase().includes(search.toLowerCase())
+  // แสดงเฉพาะสินค้าที่อยู่ในชุดที่เลือก (ตามลำดับในชุด) — ไม่แสดงสินค้าอื่น
+  const onboardingList = useMemo(
+    () =>
+      bundleItems.map((b) => ({
+        productId: b.productId,
+        productName: products.find((p) => p.id === b.productId)?.name || b.productName,
+        defaultQty: b.quantityPerSet as number | null,
+        stock: products.find((p) => p.id === b.productId)?.quantity ?? 0,
+      })),
+    [bundleItems, products]
   );
+
+  const filteredProducts = products
+    .filter((p) => !bundledIds?.has(p.id))
+    .filter(
+      (p) =>
+        p.name.toLowerCase().includes(search.toLowerCase()) ||
+        p.category.toLowerCase().includes(search.toLowerCase())
+    );
 
   const today = new Date().toISOString().slice(0, 10);
   const pendingEmployees = useMemo(
@@ -616,10 +701,10 @@ export default function RequisitionPage() {
           <div className="-mx-4 px-4 md:mx-0 md:px-0 flex gap-2 overflow-x-auto md:flex-wrap md:overflow-visible no-scrollbar snap-x py-1">
             {(
               [
+                { key: "stock", label: "เช็คสต็อกชุดสินค้าที่จัดเตรียมไว้", on: "bg-emerald-600" },
                 { key: "general", label: "เบิกของทั่วไป", on: "bg-emerald-600" },
                 { key: "onboarding", label: "เบิกสำหรับพนักงานใหม่", on: "bg-emerald-600" },
                 { key: "activity", label: "เบิกสำหรับกิจกรรม", on: "bg-orange-500" },
-                { key: "stock", label: "เช็คสต็อกของ Onboarding", on: "bg-emerald-600" },
               ] as const
             ).map((t) => (
               <button
@@ -657,7 +742,7 @@ export default function RequisitionPage() {
           )}
         </div>
 
-        {loading ? (
+        {loading || (mode === "general" && bundledIds === null) ? (
           <HopLoader />
         ) : mode === "general" ? (
           <>
@@ -1104,13 +1189,26 @@ export default function RequisitionPage() {
         ) : mode === "stock" ? (
           stockLoading ? (
             <HopLoader />
-          ) : stockBundles.length === 0 ? (
-            <p className="text-slate-400 text-sm">ยังไม่มีชุดพนักงานใหม่</p>
+          ) : stockBundles.length === 0 && products.length === 0 ? (
+            <p className="text-slate-400 text-sm">ยังไม่มีสินค้า</p>
           ) : (
             <div className="space-y-6">
               <p className="text-sm text-slate-500">
-                ดูจำนวนสินค้าในชุดพนักงานใหม่ (ดูอย่างเดียว เบิกไม่ได้ในหน้านี้)
+                ดูจำนวนสินค้าทั้งหมดและจำนวนสินค้าที่เหลืออยู่ในสต็อกของแต่ละชุดได้ที่นี่
               </p>
+              {/* สินค้าที่ไม่ได้อยู่ในชุดใดเลย */}
+              {looseStockProducts.length > 0 && (
+                <section>
+                  <h2 className="text-lg font-semibold text-slate-800 mb-2">จำนวนสินค้าทั้งหมด</h2>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-4">
+                    {looseStockProducts.map((p) => (
+                      <StockCard key={p.id} p={p} fallbackName={p.name} />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* ชุดสินค้า */}
               {stockBundles.map(({ bundle, items }) => (
                 <section key={bundle.id}>
                   <h2 className="text-lg font-semibold text-slate-800 mb-2">{bundle.bundleName}</h2>
@@ -1118,68 +1216,13 @@ export default function RequisitionPage() {
                     <p className="text-sm text-slate-400">ชุดนี้ยังไม่มีสินค้า</p>
                   ) : (
                     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-4">
-                      {items.map((item) => {
-                        const p = products.find((x) => x.id === item.productId);
-                        const stock = p?.quantity ?? 0;
-                        const outOfStock = stock <= 0;
-                        const lowStock = !outOfStock && !!p && stock <= p.lowStockThreshold;
-                        const name = p?.name || item.productName;
-                        return (
-                          <div
-                            key={item.id}
-                            className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm"
-                          >
-                            <div className="relative aspect-[5/4] bg-white overflow-hidden border-b border-slate-100">
-                              {p?.imageUrl ? (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img
-                                  src={p.imageUrl}
-                                  alt={name}
-                                  className={`absolute inset-0 w-full h-full object-contain p-1.5 ${
-                                    outOfStock ? "grayscale opacity-50" : ""
-                                  }`}
-                                />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center text-slate-300">
-                                  <Package className="w-10 h-10" />
-                                </div>
-                              )}
-                              {lowStock && (
-                                <span className="absolute top-2 right-2 bg-amber-500 text-white text-[11px] font-semibold px-2 py-0.5 rounded-full shadow">
-                                  เหลือน้อย!
-                                </span>
-                              )}
-                              {outOfStock && (
-                                <span className="absolute top-2 right-2 bg-red-500 text-white text-[11px] font-semibold px-2 py-0.5 rounded-full shadow">
-                                  หมด
-                                </span>
-                              )}
-                            </div>
-                            <div className="p-3.5">
-                              <span className="inline-block max-w-full truncate text-xs font-medium text-slate-500 bg-slate-100 rounded-full px-2.5 py-0.5 mb-2">
-                                {p?.category || "ทั่วไป"}
-                              </span>
-                              <h3 className="font-bold text-base text-slate-900 leading-snug tracking-tight line-clamp-1 mb-1.5">
-                                {name}
-                              </h3>
-                              <p className="text-[13px] text-slate-500 flex items-baseline gap-1.5">
-                                คงเหลือ{" "}
-                                <span
-                                  className={`text-lg font-extrabold leading-none ${
-                                    outOfStock
-                                      ? "text-red-500"
-                                      : lowStock
-                                      ? "text-amber-600"
-                                      : "text-emerald-700"
-                                  }`}
-                                >
-                                  {formatNumber(stock)} {p?.unit || ""}
-                                </span>
-                              </p>
-                            </div>
-                          </div>
-                        );
-                      })}
+                      {items.map((item) => (
+                        <StockCard
+                          key={item.id}
+                          p={products.find((x) => x.id === item.productId)}
+                          fallbackName={item.productName}
+                        />
+                      ))}
                     </div>
                   )}
                 </section>
@@ -1368,7 +1411,7 @@ export default function RequisitionPage() {
                   {selectedBundleId && (
                     <div className="space-y-2 mb-4">
                       <p className="text-sm font-medium text-slate-600 mb-1">
-                        เลือกสินค้าและจำนวนที่จะเบิก (ชุดเป็นแค่ค่าเริ่มต้น ปรับหรือเพิ่มสินค้าอื่นได้)
+                        เลือกจำนวนที่จะเบิก (แสดงเฉพาะสินค้าในชุดนี้ ปรับจำนวนได้)
                       </p>
                       <input
                         type="text"
