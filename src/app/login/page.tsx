@@ -89,7 +89,7 @@ const REMEMBER_KEY = "stock-req-remember-username";
 
 /** ปุ่มทดสอบมุมขวาบน (กลางวัน / กลางคืน / Auto / จำลองข้อความ)
  *  false = ซ่อน (ฟังก์ชันและโค้ดยังอยู่ครบ) | true = แสดง */
-const SHOW_TEST_BUTTONS = true;
+const SHOW_TEST_BUTTONS = false;
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
