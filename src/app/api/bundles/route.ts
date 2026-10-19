@@ -62,11 +62,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(bundle);
     }
     if (body.type === "item") {
+      if ((typeof body.quantityPerSet !== "number" && typeof body.quantityPerSet !== "string") || (typeof body.quantityPerSet === "string" && !body.quantityPerSet.trim())) {
+        return NextResponse.json({ error: "จำนวนต่อชุดต้องเป็นจำนวนเต็มมากกว่า 0" }, { status: 400 });
+      }
+      const quantityPerSet = Number(body.quantityPerSet);
+      if (!Number.isSafeInteger(quantityPerSet) || quantityPerSet <= 0) {
+        return NextResponse.json({ error: "จำนวนต่อชุดต้องเป็นจำนวนเต็มมากกว่า 0" }, { status: 400 });
+      }
       const item = await createBundleItem({
         bundleId: body.bundleId,
         productId: body.productId,
         productName: body.productName,
-        quantityPerSet: Number(body.quantityPerSet) || 1,
+        quantityPerSet,
       });
       return NextResponse.json(item);
     }
@@ -95,7 +102,16 @@ export async function PATCH(req: NextRequest) {
     const updates: Partial<{ productId: string; productName: string; quantityPerSet: number }> = {};
     if (productId) updates.productId = productId;
     if (productName) updates.productName = productName;
-    if (quantityPerSet !== undefined) updates.quantityPerSet = Number(quantityPerSet);
+    if (quantityPerSet !== undefined) {
+      if ((typeof quantityPerSet !== "number" && typeof quantityPerSet !== "string") || (typeof quantityPerSet === "string" && !quantityPerSet.trim())) {
+        return NextResponse.json({ error: "จำนวนต่อชุดต้องเป็นจำนวนเต็มมากกว่า 0" }, { status: 400 });
+      }
+      const parsedQuantity = Number(quantityPerSet);
+      if (!Number.isSafeInteger(parsedQuantity) || parsedQuantity <= 0) {
+        return NextResponse.json({ error: "จำนวนต่อชุดต้องเป็นจำนวนเต็มมากกว่า 0" }, { status: 400 });
+      }
+      updates.quantityPerSet = parsedQuantity;
+    }
 
     const item = await updateBundleItem(id, updates);
     if (!item) {

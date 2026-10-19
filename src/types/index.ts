@@ -198,3 +198,20 @@ export interface ProductFormData {
   category: string;
   lowStockThreshold: number;
 }
+// ---- Batch (multi-person) requisition notifications, queued for the digest ----
+export type BatchKind = "onboarding" | "activity";
+
+export interface BatchNotification {
+  id: string;
+  kind: BatchKind;
+  status: "PENDING" | "SENT";
+  requestedBy: string;
+  createdAt: string;
+  // items = what THIS person received (used to group people who got the same set)
+  people: { name: string; employeeId?: string; items?: { name: string; qty: number }[] }[];
+  // total = sum over every person; perPerson = set when everyone got the same qty
+  items: { name: string; total: number; perPerson: number | null }[];
+  failed: { name: string; error: string }[];
+  sentAt: string;
+  sentBy: string;
+}

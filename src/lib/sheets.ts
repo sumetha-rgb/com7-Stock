@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import type { sheets_v4 } from "googleapis";
 import { v4 as uuidv4 } from "uuid";
 import { Mutex } from "async-mutex";
 import type {
@@ -17,6 +18,8 @@ import type {
   ItemReceiveState,
   OverallReceiveState,
   ItemSource,
+  BatchKind,
+  BatchNotification,
 } from "@/types";
 
 // ============ Config ============
@@ -36,6 +39,8 @@ const SHEETS = {
   ONBOARDING_BUNDLE_ITEMS: "OnboardingBundleItems",
   // Newcomer roster, synced in from an external Google Sheet by Admin2.
   DATA_NEWCOMER: "Data Newcomer",
+  // Multi-person requisition batches waiting for the 09:00 / manual digest.
+  NOTIFICATION_QUEUE: "NotificationQueue",
 } as const;
 
 // Headers (must match exactly)
@@ -51,6 +56,10 @@ const HEADERS = {
   AuditLog: ["id", "actorId", "actorName", "action", "targetUserId", "detail", "createdAt"],
   OnboardingBundles: ["id", "bundleName", "description", "isActive", "createdAt"],
   OnboardingBundleItems: ["id", "bundleId", "productId", "productName", "quantityPerSet"],
+  NotificationQueue: [
+    "id", "kind", "status", "requestedBy", "createdAt",
+    "peopleJson", "itemsJson", "failedJson", "sentAt", "sentBy",
+  ],
   // Visible/business columns match exactly what Admin2 asked for; the last
   // four columns are internal bookkeeping (kept at the end so the sheet
   // still reads naturally to a human opening it in Google Sheets).
@@ -81,7 +90,7 @@ const PRODUCTS_TTL_MS = 30_000;
 const USERS_TTL_MS = 15_000;
 const LOGS_TTL_MS = 15_000;
 const SMALL_SHEET_TTL_MS = 15_000; // employees, audit, bundles
-const READ_TIMEOUT_MS = 8_000;
+const READ_TIMEOUT_MS = 5_000;
 const WRITE_TIMEOUT_MS = 15_000;
 
 // ============ Auth Client ============
@@ -111,7 +120,13 @@ function getAuth() {
 async function getSheetsClient() {
   // Reuse one client so the OAuth access token is cached and refreshed only
   // when it expires (previously every sheet read requested a new token).
-  if (!cachedSheets) cachedSheets = google.sheets({ version: "v4", auth: getAuth() });
+  if (!cachedSheets) {
+    // Keep retries in withRetry() under our control. The Google client has its
+    // own retries enabled by default, which multiplied an 8s timeout into long
+    // waits and could retry writes whose outcome was unknown.
+    google.options({ retry: false });
+    cachedSheets = google.sheets({ version: "v4", auth: getAuth() });
+  }
   return cachedSheets;
 }
 
@@ -148,20 +163,29 @@ function rowToObject<T extends Record<string, unknown>>(
 // rateLimitOnly: for writes - only retry when Google REJECTED the call (429),
 // never after a timeout/5xx where the write may have gone through (a retried
 // append could otherwise create a duplicate row).
-async function withRetry<T>(fn: () => Promise<T>, attempts = 3, rateLimitOnly = false): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, attempts = 2, rateLimitOnly = false): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
       return await fn();
     } catch (err) {
       lastErr = err;
-      const e = err as { code?: number | string; status?: number };
-      const code = Number(e?.code ?? e?.status);
+      const e = err as {
+        code?: number | string;
+        status?: number;
+        type?: string;
+        message?: string;
+        cause?: { code?: number | string; message?: string };
+      };
+      const rawCode = e?.code ?? e?.cause?.code ?? e?.status;
+      const code = Number(rawCode);
+      const message = `${e?.message ?? ""} ${e?.type ?? ""} ${e?.cause?.message ?? ""} ${String(err ?? "")}`;
       const transient = rateLimitOnly
         ? code === 429
         : code === 429 ||
           (code >= 500 && code < 600) ||
-          ["ECONNRESET", "ETIMEDOUT", "ECONNABORTED", "EAI_AGAIN", "ENOTFOUND"].includes(String(e?.code));
+          ["ECONNRESET", "ETIMEDOUT", "ECONNABORTED", "EAI_AGAIN", "ENOTFOUND"].includes(String(rawCode)) ||
+          /network timeout|request-timeout|getaddrinfo|socket hang up/i.test(message);
       if (!transient || i === attempts - 1) break;
       await new Promise((r) => setTimeout(r, 400 * 2 ** i)); // 400ms, 800ms
     }
@@ -247,8 +271,13 @@ async function appendRows(sheetName: string, rows: unknown[][]): Promise<void> {
         sheets.spreadsheets.values.append(
           {
             spreadsheetId: SPREADSHEET_ID,
-            range: sheetName,
+            // Anchor the table search to column A only. With a bare sheet name,
+            // Sheets guesses the "table" from the whole sheet; if there are blank
+            // cells/rows (e.g. old rows without note/isActivity) it can detect a
+            // block that starts in column R and write the new row shifted right.
+            range: `'${sheetName.replace(/'/g, "''")}'!A:A`,
             valueInputOption: "USER_ENTERED",
+            insertDataOption: "INSERT_ROWS",
             requestBody: { values: rows },
           },
           { timeout: WRITE_TIMEOUT_MS }
@@ -339,6 +368,67 @@ async function getSheetIdByName(sheetName: string): Promise<number> {
   return sheet.properties.sheetId;
 }
 
+type AtomicRowUpdate = { sheetName: string; rowIndex: number; values: unknown[] };
+type AtomicRowsAppend = { sheetName: string; rows: unknown[][] };
+
+function toCellData(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return { userEnteredValue: { numberValue: value } };
+  }
+  if (typeof value === "boolean") {
+    return { userEnteredValue: { boolValue: value } };
+  }
+  return { userEnteredValue: { stringValue: String(value ?? "") } };
+}
+
+// Apply related stock, requisition-log, and audit changes in one Sheets API
+// batchUpdate. Sheets validates/applies the batch together, avoiding half-writes
+// when one of the related ranges is invalid or rejected.
+async function applyAtomicSheetChanges(updates: AtomicRowUpdate[], appends: AtomicRowsAppend[]): Promise<void> {
+  const touched = new Set<string>();
+  const requests: sheets_v4.Schema$Request[] = [];
+
+  for (const update of updates) {
+    const sheetId = await getSheetIdByName(update.sheetName);
+    touched.add(update.sheetName);
+    requests.push({
+      updateCells: {
+        start: { sheetId, rowIndex: update.rowIndex - 1, columnIndex: 0 },
+        rows: [{ values: update.values.map(toCellData) }],
+        fields: "userEnteredValue",
+      },
+    });
+  }
+
+  for (const append of appends) {
+    if (!append.rows.length) continue;
+    const sheetId = await getSheetIdByName(append.sheetName);
+    touched.add(append.sheetName);
+    requests.push({
+      appendCells: {
+        sheetId,
+        rows: append.rows.map((row) => ({ values: row.map(toCellData) })),
+        fields: "userEnteredValue",
+      },
+    });
+  }
+
+  if (!requests.length) return;
+  const sheets = await getSheetsClient();
+  try {
+    await withRetry(
+      () => sheets.spreadsheets.batchUpdate(
+        { spreadsheetId: SPREADSHEET_ID, requestBody: { requests } },
+        { timeout: WRITE_TIMEOUT_MS }
+      ),
+      3,
+      true
+    );
+  } finally {
+    for (const sheetName of touched) invalidateSheetCaches(sheetName);
+  }
+}
+
 async function deleteRow(sheetName: string, rowIndex: number): Promise<void> {
   const sheets = await getSheetsClient();
   const sheetId = await getSheetIdByName(sheetName);
@@ -392,8 +482,8 @@ async function findRowIndex(
 }
 
 // ============ Users ============
-export async function getUsers(): Promise<User[]> {
-  const data = await getSheetDataCached(SHEETS.USERS, USERS_TTL_MS);
+export async function getUsers(forceRefresh = false): Promise<User[]> {
+  const data = await getSheetDataCached(SHEETS.USERS, USERS_TTL_MS, forceRefresh);
   if (data.length < 2) return [];
   const headers = data[0];
   return data.slice(1).map((row) => mapUserRow(headers, row));
@@ -419,8 +509,8 @@ export async function getUserByUsername(username: string): Promise<User | null> 
   return users.find((u) => u.username.toLowerCase() === username.toLowerCase() && u.status === "ACTIVE") || null;
 }
 
-export async function getUserById(id: string): Promise<User | null> {
-  const users = await getUsers();
+export async function getUserById(id: string, forceRefresh = false): Promise<User | null> {
+  const users = await getUsers(forceRefresh);
   return users.find((u) => u.id === id) || null;
 }
 
@@ -614,6 +704,9 @@ export async function deductStock(
     note?: string;
   }
 ): Promise<{ success: boolean; log?: RequisitionLog; error?: string; currentQty?: number }> {
+  if (!productId || !Number.isSafeInteger(quantity) || quantity <= 0) {
+    return { success: false, error: "จำนวนเบิกต้องเป็นจำนวนเต็มมากกว่า 0" };
+  }
   return stockMutex.runExclusive(async () => {
     const MAX_RETRIES = 3;
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -680,9 +773,6 @@ export async function deductStock(
         newVersion,
       ];
 
-      // Write product
-      await updateRow(SHEETS.PRODUCTS, rowIndex, values);
-
       // Write log
       const log: RequisitionLog = {
         id: uuidv4(),
@@ -704,8 +794,11 @@ export async function deductStock(
         note: meta.note || "",
         isActivity: false,
       };
-      await appendRequisitionLog(log);
-      invalidateProductsCache();
+      await ensureLogHeaders();
+      await applyAtomicSheetChanges(
+        [{ sheetName: SHEETS.PRODUCTS, rowIndex, values }],
+        [{ sheetName: SHEETS.REQUISITION_LOG, rows: [requisitionLogToRow(log)] }]
+      );
       return { success: true, log };
     }
     return { success: false, error: "Optimistic lock / race condition failed after retries" };
@@ -734,6 +827,22 @@ export async function deductStockBatch(
   results: { productId: string; success: boolean; error?: string; log?: RequisitionLog }[];
   error?: string;
 }> {
+  const mergedItems = new Map<string, number>();
+  for (const item of items) {
+    if (!item || typeof item.productId !== "string" || !item.productId || !Number.isSafeInteger(item.quantity) || item.quantity <= 0) {
+      return { success: false, results: [], error: "จำนวนสินค้าแต่ละรายการต้องเป็นจำนวนเต็มมากกว่า 0" };
+    }
+    const total = (mergedItems.get(item.productId) || 0) + item.quantity;
+    if (!Number.isSafeInteger(total)) {
+      return { success: false, results: [], error: "จำนวนสินค้ารวมเกินค่าที่รองรับ" };
+    }
+    mergedItems.set(item.productId, total);
+  }
+  const normalizedItems = [...mergedItems.entries()].map(([productId, quantity]) => ({ productId, quantity }));
+  if (normalizedItems.length === 0) {
+    return { success: false, results: [], error: "ไม่มีรายการที่จะเบิก" };
+  }
+
   return stockMutex.runExclusive(async () => {
     // One fresh read of the Products sheet (rows + current quantities).
     const data = await getSheetData(SHEETS.PRODUCTS);
@@ -753,7 +862,7 @@ export async function deductStockBatch(
     // First pass: check all quantities
     const checks: { product: Product; qty: number }[] = [];
     const insufficient: string[] = [];
-    for (const item of items) {
+    for (const item of normalizedItems) {
       const p = productById.get(item.productId);
       if (!p) {
         return {
@@ -831,13 +940,17 @@ export async function deductStockBatch(
       results.push({ productId: product.id, success: true, log });
     }
 
-    // Stock first, then the log trail (same order as before). If the stock
-    // write fails nothing is logged, so the sheets stay consistent.
-    await batchUpdateRows(
-      SHEETS.PRODUCTS,
-      [...pendingWrites.entries()].map(([rowIndex, values]) => ({ rowIndex, values }))
+    // A single Google Sheets batch applies all stock changes and their logs
+    // together, so a rejected batch cannot leave stock and history out of sync.
+    await ensureLogHeaders();
+    await applyAtomicSheetChanges(
+      [...pendingWrites.entries()].map(([rowIndex, values]) => ({
+        sheetName: SHEETS.PRODUCTS,
+        rowIndex,
+        values,
+      })),
+      [{ sheetName: SHEETS.REQUISITION_LOG, rows: logs.map(requisitionLogToRow) }]
     );
-    await appendRequisitionLogs(logs);
 
     const allSuccess = results.every((r) => r.success);
     const anySuccess = results.some((r) => r.success);
@@ -973,6 +1086,9 @@ export async function returnStockItem(
   quantity: number,
   actor: { userId: string; userName: string }
 ): Promise<{ success: boolean; error?: string; log?: RequisitionLog; product?: Product }> {
+  if (!logId || !Number.isSafeInteger(quantity) || quantity <= 0) {
+    return { success: false, error: "จำนวนคืนต้องเป็นจำนวนเต็มมากกว่า 0" };
+  }
   return stockMutex.runExclusive(async () => {
     // 1) Locate & validate the original requisition log row
     // Both sheets are read at the same time (was one after the other).
@@ -1025,7 +1141,7 @@ export async function returnStockItem(
 
     const newQty = product.quantity + quantity;
     const updatedAt = new Date().toISOString();
-    await updateRow(SHEETS.PRODUCTS, productRowIndex, [
+    const updatedProductValues = [
       product.id,
       product.name,
       product.imageUrl,
@@ -1035,8 +1151,7 @@ export async function returnStockItem(
       product.lowStockThreshold,
       updatedAt,
       product.version + 1,
-    ]);
-    invalidateProductsCache();
+    ];
 
     // 3) Update the original log's returnedQuantity + returnedAt (timestamp
     // of this — the most recent — return action against this requisition)
@@ -1046,7 +1161,7 @@ export async function returnStockItem(
       returnedQuantity: currentLog.returnedQuantity + quantity,
       returnedAt,
     };
-    const logWrite = updateRow(SHEETS.REQUISITION_LOG, logRowIndex, [
+    const updatedLogValues = [
       updatedLog.id,
       updatedLog.userId,
       updatedLog.userName,
@@ -1066,17 +1181,23 @@ export async function returnStockItem(
       updatedLog.returnedAt,
       updatedLog.note || "",
       updatedLog.isActivity ? "TRUE" : "FALSE",
-    ]);
+    ];
 
-    // 4) Audit trail (written at the same time as the log update)
-    const auditWrite = appendAuditLog({
+    // Update stock, the return record, and the audit trail in one Sheets batch.
+    const auditEntry = {
       actorId: actor.userId,
       actorName: actor.userName,
       action: "RETURN_ITEM",
       targetUserId: currentLog.userId,
       detail: `คืน ${currentLog.productName} จำนวน ${quantity} ${product.unit} (เบิกโดย ${currentLog.userName} เมื่อ ${currentLog.createdAt})`,
-    });
-    await Promise.all([logWrite, auditWrite]);
+    };
+    await applyAtomicSheetChanges(
+      [
+        { sheetName: SHEETS.PRODUCTS, rowIndex: productRowIndex, values: updatedProductValues },
+        { sheetName: SHEETS.REQUISITION_LOG, rowIndex: logRowIndex, values: updatedLogValues },
+      ],
+      [{ sheetName: SHEETS.AUDIT_LOG, rows: [auditLogToRow(auditEntry)] }]
+    );
 
     return {
       success: true,
@@ -1809,11 +1930,11 @@ export async function deleteBundleItem(id: string): Promise<boolean> {
 
 // ============ Audit Log ============
 export async function appendAuditLog(entry: Omit<AuditLog, "id" | "createdAt">): Promise<void> {
-  const id = uuidv4();
-  const createdAt = new Date().toISOString();
-  await appendRows(SHEETS.AUDIT_LOG, [
-    [id, entry.actorId, entry.actorName, entry.action, entry.targetUserId, entry.detail, createdAt],
-  ]);
+  await appendRows(SHEETS.AUDIT_LOG, [auditLogToRow(entry)]);
+}
+
+function auditLogToRow(entry: Omit<AuditLog, "id" | "createdAt">): unknown[] {
+  return [uuidv4(), entry.actorId, entry.actorName, entry.action, entry.targetUserId, entry.detail, new Date().toISOString()];
 }
 
 export async function getAuditLogs(): Promise<AuditLog[]> {
@@ -1859,7 +1980,7 @@ export async function getReturnHistory(filter?: { userId?: string }): Promise<Re
 
   return logs
     .filter((l) => l.action === "RETURN_ITEM")
-    .filter((l) => !filter?.userId || l.targetUserId === filter.userId)
+    .filter((l) => !filter?.userId || l.actorId === filter.userId)
     .map((l) => {
       const m = l.detail.match(detailPattern);
       return {
@@ -1951,4 +2072,124 @@ export async function ensureSheetHeaders(): Promise<void> {
     }
   }
   invalidateSheetCaches();
+}
+
+// ============ Batch notification queue ============
+// Every multi-person requisition (onboarding / activity) is stored here as
+// ONE row (= one batch) with status PENDING. The 09:00 cron or the admin
+// button then sends a single digest and flips the rows to SENT, so nothing
+// is ever announced twice.
+async function ensureQueueSheetExists(): Promise<void> {
+  const sheets = await getSheetsClient();
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+  const exists = (meta.data.sheets || []).some((s) => s.properties?.title === SHEETS.NOTIFICATION_QUEUE);
+  if (!exists) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: { requests: [{ addSheet: { properties: { title: SHEETS.NOTIFICATION_QUEUE } } }] },
+    });
+  }
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEETS.NOTIFICATION_QUEUE}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [HEADERS.NotificationQueue] },
+  });
+  invalidateSheetCaches(SHEETS.NOTIFICATION_QUEUE);
+}
+
+function parseJsonCell<T>(raw: string | undefined, fallback: T): T {
+  try {
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function batchToRow(b: BatchNotification): unknown[] {
+  return [
+    b.id, b.kind, b.status, b.requestedBy, b.createdAt,
+    JSON.stringify(b.people), JSON.stringify(b.items), JSON.stringify(b.failed),
+    b.sentAt, b.sentBy,
+  ];
+}
+
+async function readBatchQueue(): Promise<{ batch: BatchNotification; rowIndex: number }[]> {
+  let data: string[][];
+  try {
+    // Always read fresh (no cache): "is it still pending?" must be accurate
+    // across serverless instances.
+    data = await getSheetData(SHEETS.NOTIFICATION_QUEUE);
+  } catch (e) {
+    console.warn("NotificationQueue sheet not found yet, creating it now.", e);
+    await ensureQueueSheetExists();
+    return [];
+  }
+  if (data.length < 2) return [];
+  const headers = data[0];
+  const out: { batch: BatchNotification; rowIndex: number }[] = [];
+  data.slice(1).forEach((row, i) => {
+    const raw = rowToObject<Record<string, string>>(headers, row);
+    if (!raw.id) return;
+    out.push({
+      rowIndex: i + 2,
+      batch: {
+        id: raw.id,
+        kind: raw.kind === "activity" ? "activity" : "onboarding",
+        status: raw.status === "SENT" ? "SENT" : "PENDING",
+        requestedBy: raw.requestedBy || "",
+        createdAt: raw.createdAt || "",
+        people: parseJsonCell(raw.peopleJson, []),
+        items: parseJsonCell(raw.itemsJson, []),
+        failed: parseJsonCell(raw.failedJson, []),
+        sentAt: raw.sentAt || "",
+        sentBy: raw.sentBy || "",
+      },
+    });
+  });
+  return out;
+}
+
+export async function enqueueBatchNotification(
+  entry: Pick<BatchNotification, "kind" | "requestedBy" | "people" | "items" | "failed">
+): Promise<string> {
+  const batch: BatchNotification = {
+    ...entry,
+    id: uuidv4(),
+    status: "PENDING",
+    createdAt: new Date().toISOString(),
+    sentAt: "",
+    sentBy: "",
+  };
+  try {
+    await appendRows(SHEETS.NOTIFICATION_QUEUE, [batchToRow(batch)]);
+  } catch (e) {
+    console.warn("enqueueBatchNotification: creating queue sheet and retrying", e);
+    await ensureQueueSheetExists();
+    await appendRows(SHEETS.NOTIFICATION_QUEUE, [batchToRow(batch)]);
+  }
+  return batch.id;
+}
+
+export async function getBatchNotifications(filter?: {
+  kind?: BatchKind;
+  status?: "PENDING" | "SENT";
+}): Promise<BatchNotification[]> {
+  const all = await readBatchQueue();
+  return all
+    .map((x) => x.batch)
+    .filter((b) => (!filter?.kind || b.kind === filter.kind) && (!filter?.status || b.status === filter.status))
+    .sort((a, b) => (a.createdAt > b.createdAt ? 1 : -1));
+}
+
+// Flip the given PENDING batches to SENT. Returns how many were updated.
+export async function markBatchesSent(ids: string[], sentBy: string): Promise<number> {
+  const wanted = new Set(ids);
+  const all = await readBatchQueue();
+  const sentAt = new Date().toISOString();
+  const updates = all
+    .filter((x) => wanted.has(x.batch.id) && x.batch.status === "PENDING")
+    .map((x) => ({ rowIndex: x.rowIndex, values: batchToRow({ ...x.batch, status: "SENT", sentAt, sentBy }) }));
+  await batchUpdateRows(SHEETS.NOTIFICATION_QUEUE, updates);
+  return updates.length;
 }

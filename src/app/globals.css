@@ -113,6 +113,22 @@ body {
 .animate-sheet-up  { animation: sheetUp 0.25s ease-out; }
 
 @media (max-width: 767px) {
+  /* Room for the fixed bottom tab bar (class added by <Nav />) */
+  body.has-tabbar {
+    padding-bottom: calc(4.75rem + env(safe-area-inset-bottom));
+  }
+  /* App-like feel: no accidental text selection on buttons, no rubber-band
+     bounce behind the sticky header/tab bar */
+  html {
+    overscroll-behavior-y: none;
+  }
+  button,
+  [role="button"],
+  nav a {
+    -webkit-user-select: none;
+    user-select: none;
+    touch-action: manipulation;
+  }
   /* 16px inputs stop iOS Safari from zooming the page on focus */
   input:not([type="checkbox"]):not([type="radio"]),
   select,

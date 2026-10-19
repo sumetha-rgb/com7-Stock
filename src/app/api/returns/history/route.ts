@@ -14,15 +14,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const user = session.user as SessionUser;
-  const { searchParams } = new URL(req.url);
-  const mine = searchParams.get("mine") === "true";
 
   try {
-    // Staff can only ever see their own return history; Admin/Admin2 see
-    // everyone's unless they explicitly ask for their own with ?mine=true.
-    const history = await getReturnHistory(
-      user.role === "Staff" ? { userId: user.id } : mine ? { userId: user.id } : undefined
-    );
+    // Every role (Staff, Admin, Admin2) only ever sees their own return
+    // history — never other people's.
+    const history = await getReturnHistory({ userId: user.id });
     return NextResponse.json(history, {
       headers: { "Cache-Control": "no-store, no-cache, must-revalidate" },
     });

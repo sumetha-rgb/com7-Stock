@@ -2,6 +2,8 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { Nav } from "@/components/Nav";
+import { useSession } from "next-auth/react";
+import { BatchDigestCard } from "@/components/BatchDigestCard";
 import toast from "react-hot-toast";
 import type { Product, OnboardingBundle, OnboardingBundleItem, Employee } from "@/types";
 import { formatNumber } from "@/lib/utils";
@@ -142,6 +144,7 @@ export default function RequisitionPage() {
   // → ไม่นำมาแสดงในหน้า "เบิกของทั่วไป". null = ยังโหลดไม่เสร็จ (กันสินค้าในชุดแวบขึ้นมาก่อน)
   const [bundledIds, setBundledIds] = useState<Set<string> | null>(null);
   useEffect(() => {
+    if (mode !== "general") return;
     let cancelled = false;
     fetch("/api/bundles?include=items", { cache: "no-store" })
       .then((r) => r.json())
@@ -160,7 +163,7 @@ export default function RequisitionPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [mode]);
 
   const loadCategories = useCallback(async () => {
     setCategoriesLoading(true);
@@ -180,8 +183,8 @@ export default function RequisitionPage() {
   }, []);
 
   useEffect(() => {
-    loadCategories();
-  }, [loadCategories]);
+    if (mode === "general") loadCategories();
+  }, [mode, loadCategories]);
 
   // Activity mode searches the WHOLE roster (incl. people who already got
   // their onboarding kit), so load employees when the tab is opened.
@@ -270,7 +273,6 @@ export default function RequisitionPage() {
     if (mode !== "stock") return;
     let cancelled = false;
     setStockLoading(true);
-    loadProducts();
     (async () => {
       try {
         // One request returns every active bundle with its items.
@@ -291,7 +293,7 @@ export default function RequisitionPage() {
     return () => {
       cancelled = true;
     };
-  }, [mode, loadProducts]);
+  }, [mode]);
 
   useEffect(() => {
     if (selectedBundleId) {
@@ -437,6 +439,10 @@ export default function RequisitionPage() {
 
   // Validates the form and, if it's OK, opens the summary popup instead of
   // submitting right away. The button no longer triggers the real action.
+  const { data: session } = useSession();
+  const canSendDigest = !!session?.user; // every logged-in role (Staff / Admin / Admin2)
+  const [digestKey, setDigestKey] = useState(0);
+
   function openConfirmSummary() {
     if (!selectedBundleId || selectedEmployees.length === 0) {
       toast.error("กรุณาเลือกชุดและพนักงานอย่างน้อย 1 คน");
@@ -466,8 +472,9 @@ export default function RequisitionPage() {
     setSubmitting(true);
     const succeeded: Employee[] = [];
     const failed: { emp: Employee; error: string }[] = [];
-    // Several people ticked -> no card per person, one summary at the end.
-    const batch = selectedEmployees.length > 1;
+    // Never one card per person: everything is queued and announced as ONE
+    // summary (09:00 auto or the send button) - even if only one person today.
+    const batch = true;
     const okItemsByEmp: { employeeId: string; items: { productId: string; quantity: number }[] }[] = [];
 
     // Submitted one employee at a time (not Promise.all) so stock checks
@@ -633,7 +640,9 @@ export default function RequisitionPage() {
         people,
         failed: failed.map((f) => ({ name: f.emp.fullName, error: f.error })),
       }),
-    }).catch(() => {});
+    })
+      .then(() => setDigestKey((k) => k + 1)) // refresh the "รอแจ้ง" counter / send button
+      .catch(() => {});
   }
 
   async function handleActivitySubmit() {
@@ -727,6 +736,11 @@ export default function RequisitionPage() {
               </button>
             ))}
           </div>
+
+          {/* Batch digest (LINE + e-mail): all roles, shown on the multi-person tabs */}
+          {canSendDigest && (mode === "onboarding" || mode === "activity") && (
+            <BatchDigestCard key={`${mode}-${digestKey}`} kind={mode} />
+          )}
 
           {mode === "general" && (
             <div className="relative w-full md:w-80">

@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Noto_Sans_Thai } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
@@ -11,7 +11,17 @@ const notoSansThai = Noto_Sans_Thai({
   subsets: ["thai", "latin"],
   weight: ["300", "400", "500", "600", "700"],
   display: "swap",
+  // Avoid preloading every subset/weight on pages that may not use them yet.
+  preload: false,
 });
+
+// Mobile: edge-to-edge layout so the bottom tab bar can respect the iPhone safe area.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#ffffff",
+};
 
 export const metadata: Metadata = {
   title: "ระบบเบิกสินค้าคงคลัง | Stock Requisition",

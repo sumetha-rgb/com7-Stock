@@ -32,11 +32,11 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   "/staff/history": History,
   "/staff/returns": RotateCcw,
   "/staff/employee-database": DatabaseZap,
-  "/admin/dashboard": LayoutDashboard,
   "/admin/products": Boxes,
   "/admin/settings/onboarding-bundles": Sparkles,
   "/admin/employees": UserPlus,
   "/admin/returns": RotateCcw,
+  "/admin2/dashboard": LayoutDashboard,
   "/admin2/users": Users,
   "/admin2/employee-database": DatabaseZap,
   "/admin2/onboarding-history": ClipboardList,
@@ -56,29 +56,36 @@ export function Nav() {
   const user = session?.user as SessionUser | undefined;
   const [confirmLogout, setConfirmLogout] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-  // Mobile-only: slide-in drawer menu (replaces the old wrapping top nav
-  // and the floating user chip).
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  // Mobile-only: bottom sheet opened from the "เมนู" tab / profile button.
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const hasUser = !!user;
 
-  // Close the drawer after navigating.
+  // Close the sheet after navigating.
   useEffect(() => {
-    setDrawerOpen(false);
+    setSheetOpen(false);
   }, [pathname]);
 
-  // Lock page scroll + Esc to close while the drawer is open.
+  // Reserve room for the fixed bottom tab bar (see .has-tabbar in globals.css).
   useEffect(() => {
-    if (!drawerOpen) return;
+    if (!hasUser) return;
+    document.body.classList.add("has-tabbar");
+    return () => document.body.classList.remove("has-tabbar");
+  }, [hasUser]);
+
+  // Lock page scroll + Esc to close while the sheet is open.
+  useEffect(() => {
+    if (!sheetOpen) return;
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDrawerOpen(false);
+      if (e.key === "Escape") setSheetOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => {
       document.body.style.overflow = prev;
       window.removeEventListener("keydown", onKey);
     };
-  }, [drawerOpen]);
+  }, [sheetOpen]);
 
   if (!user) return null;
 
@@ -93,7 +100,6 @@ export function Nav() {
   ];
 
   const adminLinks = [
-    { href: "/admin/dashboard", label: "Dashboard" },
     { href: "/admin/products", label: "สินค้า" },
     { href: "/admin/settings/onboarding-bundles", label: "ชุดของพนักงานใหม่" },
     { href: "/admin/employees", label: "พนักงานใหม่" },
@@ -101,6 +107,7 @@ export function Nav() {
   ];
 
   const admin2Links = [
+    { href: "/admin2/dashboard", label: "Dashboard" },
     { href: "/admin2/users", label: "จัดการผู้ใช้งาน" },
     { href: "/admin2/employee-database", label: "ฐานข้อมูลพนักงานใหม่" },
     { href: "/admin2/onboarding-history", label: "ประวัติการเบิกของพนักงานใหม่" },
@@ -127,10 +134,30 @@ export function Nav() {
     .filter((l) => pathname.startsWith(l.href))
     .sort((a, b) => b.href.length - a.href.length)[0];
 
+  // Bottom tab bar: 4 shortcuts (2 each side) around the centre "เมนู" button.
+  const SHORT: Record<string, string> = {
+    "/staff/requisition": "เบิกของ",
+    "/staff/history": "ประวัติ",
+    "/staff/returns": "คืนของ",
+    "/staff/employee-database": "พนักงานใหม่",
+    "/admin/products": "สินค้า",
+    "/admin2/dashboard": "ภาพรวม",
+  };
+  const tabHrefs =
+    user.role === "Admin2"
+      ? ["/admin2/dashboard", "/staff/requisition", "/staff/history", "/staff/returns"]
+      : user.role === "Admin"
+      ? ["/staff/requisition", "/staff/history", "/staff/returns", "/admin/products"]
+      : ["/staff/requisition", "/staff/history", "/staff/returns", "/staff/employee-database"];
+  const tabs = tabHrefs.map((href) => ({ href, short: SHORT[href] }));
+  const leftTabs = tabs.slice(0, 2);
+  const rightTabs = tabs.slice(2);
+  const initial = (user.name || "?").trim().charAt(0).toUpperCase();
+
   const roleClass = ROLE_STYLES[user.role] ?? "bg-slate-100 text-slate-700 ring-1 ring-slate-300";
 
   function requestLogout() {
-    setDrawerOpen(false);
+    setSheetOpen(false);
     setConfirmLogout(true);
   }
 
@@ -237,127 +264,192 @@ export function Nav() {
         </div>
       </aside>
 
-      {/* Mobile: compact top bar (menu button + logo + current page) */}
-      <header className="md:hidden sticky top-0 z-50 bg-white border-b border-slate-200 shadow-sm pt-[env(safe-area-inset-top)]">
-        <div className="flex items-center gap-1.5 h-14 px-2">
-          <button
-            onClick={() => setDrawerOpen(true)}
-            aria-label="เปิดเมนู"
-            aria-expanded={drawerOpen}
-            className="flex items-center justify-center w-11 h-11 rounded-xl text-slate-700 active:bg-slate-100 transition shrink-0"
-          >
-            <Menu className="w-6 h-6" />
-          </button>
-          <Link
-            href="/staff/requisition"
-            className="font-bold text-sm flex items-center gap-2 text-emerald-700 shrink-0"
-          >
+      {/* Mobile: app-style top bar (logo + current page title + profile) */}
+      <header className="md:hidden sticky top-0 z-40 bg-white border-b border-slate-200 pt-[env(safe-area-inset-top)]">
+        <div className="flex items-center gap-3 h-14 px-4">
+          <Link href="/staff/requisition" aria-label="หน้าแรก" className="shrink-0">
             <LogoMark className="h-6 w-auto" />
-            Stock Req
           </Link>
-          <div className="flex-1 min-w-0 flex justify-end pr-1">
-            {currentLink && (
-              <span className="truncate text-xs font-semibold text-emerald-700 bg-emerald-50 rounded-full px-3 py-1.5">
-                {currentLink.label.trim()}
-              </span>
-            )}
-          </div>
+          <h1 className="flex-1 min-w-0 truncate text-[17px] font-bold tracking-tight text-slate-900">
+            {currentLink ? currentLink.label.trim() : "Stock Req"}
+          </h1>
+          <button
+            onClick={() => setSheetOpen(true)}
+            aria-label="เปิดโปรไฟล์และเมนู"
+            className="shrink-0 active:scale-95 transition-transform"
+          >
+            <span className="flex items-center justify-center w-10 h-10 rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 text-[17px] font-bold">
+              {initial}
+            </span>
+          </button>
         </div>
       </header>
 
-      {/* Mobile: slide-in drawer with grouped links, user info and logout */}
-      {drawerOpen && (
-        <div className="md:hidden fixed inset-0 z-[60]" role="dialog" aria-modal="true">
-          <div
-            className="absolute inset-0 bg-slate-900/45 animate-fade-in"
-            onClick={() => setDrawerOpen(false)}
-          />
-          <aside className="absolute inset-y-0 left-0 w-[85%] max-w-xs bg-white shadow-2xl flex flex-col animate-drawer-in">
-            <div className="flex items-center justify-between h-14 shrink-0 px-4 border-b border-slate-200 pt-[env(safe-area-inset-top)] box-content">
-              <span className="font-bold text-sm flex items-center gap-2 text-emerald-700">
-                <LogoMark className="h-6 w-auto" />
-                Stock Req
-              </span>
-              <button
-                onClick={() => setDrawerOpen(false)}
-                aria-label="ปิดเมนู"
-                className="flex items-center justify-center w-10 h-10 -mr-2 rounded-xl text-slate-500 active:bg-slate-100"
+      {/* Mobile: bottom tab bar - curved cradle with a raised centre "เมนู" button */}
+      <nav
+        aria-label="เมนูหลัก"
+        className="md:hidden fixed inset-x-0 bottom-0 z-40 pointer-events-none"
+        style={{ filter: "drop-shadow(0 -4px 12px rgba(15,23,42,0.10))" }}
+      >
+        <div className="relative flex h-16 pointer-events-auto">
+          {[leftTabs, null, rightTabs].map((group, gi) =>
+            group === null ? (
+              /* Centre cradle: a real flex item, so the white side bars stop at the notch */
+              <div key="centre" className="relative w-24 shrink-0">
+                <svg
+                  className="absolute inset-0 w-full h-full"
+                  viewBox="0 0 96 64"
+                  preserveAspectRatio="none"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M0 0H8C14 0 16 4 20.1 10A29 29 0 0 0 75.9 10C80 4 82 0 88 0H96V64H0Z"
+                    fill="#ffffff"
+                  />
+                </svg>
+                <button
+                  onClick={() => setSheetOpen(true)}
+                  aria-label="เปิดเมนู"
+                  aria-haspopup="dialog"
+                  aria-expanded={sheetOpen}
+                  className="absolute left-1/2 -translate-x-1/2 -top-[25px] flex items-center justify-center w-[54px] h-[54px] rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200 ring-[3px] ring-white active:scale-95 transition-transform"
+                >
+                  <Menu className="w-7 h-7" strokeWidth={2.25} />
+                </button>
+                <span className="absolute inset-x-0 bottom-2 text-center text-[11px] leading-none font-bold text-emerald-700 select-none">
+                  เมนู
+                </span>
+              </div>
+            ) : (
+              <ul
+                key={gi}
+                className={cn("flex flex-1 bg-white", gi === 0 ? "rounded-tl-[28px] pl-1" : "rounded-tr-[28px] pr-1")}
               >
-                <X className="w-5 h-5" />
-              </button>
+                {group.map((t) => {
+                  const Icon = ICONS[t.href];
+                  const active = !sheetOpen && pathname.startsWith(t.href);
+                  return (
+                    <li key={t.href} className="flex-1 relative">
+                      {active && (
+                        <span className="absolute top-0 left-1/2 -translate-x-1/2 h-[3px] w-8 rounded-b-full bg-emerald-500" />
+                      )}
+                      <Link
+                        href={t.href}
+                        aria-current={active ? "page" : undefined}
+                        className="flex flex-col items-center justify-center gap-1 h-full select-none active:scale-90 transition-transform"
+                      >
+                        <span
+                          className={cn(
+                            "flex items-center justify-center h-8 w-8 rounded-2xl transition-all duration-200",
+                            active ? "bg-emerald-50 text-emerald-600 scale-110" : "text-slate-400"
+                          )}
+                        >
+                          {Icon && <Icon className="w-[22px] h-[22px]" />}
+                        </span>
+                        <span
+                          className={cn(
+                            "text-[11px] leading-none whitespace-nowrap",
+                            active ? "font-bold text-emerald-700" : "font-medium text-slate-500"
+                          )}
+                        >
+                          {t.short}
+                        </span>
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            )
+          )}
+        </div>
+        <div className="bg-white pointer-events-auto" style={{ height: "env(safe-area-inset-bottom)" }} />
+      </nav>
+
+      {/* Mobile: bottom sheet with profile, every page as a tile grid, logout */}
+      {sheetOpen && (
+        <div className="md:hidden fixed inset-0 z-[60]" role="dialog" aria-modal="true" aria-label="เมนู">
+          <div className="absolute inset-0 bg-slate-900/45 animate-fade-in" onClick={() => setSheetOpen(false)} />
+          <div className="absolute inset-x-0 bottom-0 max-h-[88%] flex flex-col rounded-t-3xl bg-slate-50 shadow-2xl animate-sheet-up">
+            <div className="shrink-0 pt-2.5 pb-1 flex justify-center">
+              <span className="h-1.5 w-10 rounded-full bg-slate-300" />
             </div>
 
-            <nav className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 py-3 flex flex-col gap-4">
-              {navGroups.map((g) => (
-                <div key={g.title} className="flex flex-col gap-1">
-                  <p className="px-2 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">
-                    {g.title}
-                  </p>
-                  {g.items.map((l) => {
-                    const Icon = ICONS[l.href];
-                    const active = pathname.startsWith(l.href);
-                    return (
-                      <Link
-                        key={l.href}
-                        href={l.href}
-                        onClick={() => setDrawerOpen(false)}
-                        className={cn(
-                          "flex items-center gap-3 min-h-12 px-2.5 py-2 rounded-xl text-[15px] transition",
-                          active
-                            ? "bg-emerald-50 text-emerald-800 font-semibold"
-                            : "text-slate-700 font-medium active:bg-slate-100"
-                        )}
-                      >
-                        {Icon && (
-                          <span
-                            className={cn(
-                              "flex items-center justify-center w-8 h-8 rounded-lg shrink-0",
-                              active
-                                ? "bg-emerald-500 text-white shadow-sm"
-                                : "bg-slate-100 text-slate-500"
-                            )}
-                          >
-                            <Icon className="w-4 h-4" />
-                          </span>
-                        )}
-                        <span className="leading-snug">{l.label.trim()}</span>
-                      </Link>
-                    );
-                  })}
-                </div>
-              ))}
-            </nav>
-
-            <div className="shrink-0 border-t border-slate-200 bg-slate-50 pb-[env(safe-area-inset-bottom)]">
-              <div className="flex items-center gap-3 px-4 pt-3">
-                <span className="flex items-center justify-center w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 shrink-0">
-                  <UserIcon className="w-5 h-5" />
-                </span>
-                <div className="flex flex-col min-w-0">
-                  <span className="text-sm font-semibold text-slate-800 leading-snug break-words">
-                    {user.name}
+            <div className="shrink-0 px-4 pt-1 pb-3">
+              <div className="relative overflow-hidden rounded-3xl bg-emerald-50 border border-emerald-100 text-slate-800 p-4">
+                <div className="flex items-center gap-3.5 pr-12">
+                  <span className="flex items-center justify-center w-14 h-14 rounded-full bg-white text-emerald-600 text-2xl font-bold ring-2 ring-emerald-200 shrink-0">
+                    {initial}
                   </span>
-                  <span
-                    className={cn(
-                      "inline-block mt-0.5 w-fit text-[10px] px-2 py-0.5 rounded-full font-medium",
-                      roleClass
-                    )}
-                  >
-                    {user.role}
-                  </span>
+                  <div className="min-w-0">
+                    <p className="text-[11px] text-emerald-700/80 leading-none mb-1">ยินดีต้อนรับ</p>
+                    <p className="text-[17px] font-bold leading-snug break-words text-slate-900">{user.name}</p>
+                    <span className="inline-flex items-center gap-1.5 mt-1.5 text-[11px] font-semibold bg-white text-emerald-700 ring-1 ring-emerald-200 rounded-full px-2.5 py-0.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                      {user.role}
+                    </span>
+                  </div>
                 </div>
-              </div>
-              <div className="px-4 py-3">
+                {/* Placed last + z-10 so nothing overlaps it and it stays tappable */}
                 <button
-                  onClick={requestLogout}
-                  className="flex items-center justify-center gap-2 w-full h-11 rounded-xl bg-red-500 active:bg-red-600 text-white text-sm font-medium shadow-sm"
+                  type="button"
+                  onClick={() => setSheetOpen(false)}
+                  aria-label="ปิดเมนู"
+                  className="absolute top-3 right-3 z-10 flex items-center justify-center w-9 h-9 rounded-full bg-white text-slate-600 ring-1 ring-emerald-200 active:bg-emerald-100"
                 >
-                  <LogOut className="w-4 h-4" />
-                  ออกจากระบบ
+                  <X className="w-4 h-4" />
                 </button>
               </div>
             </div>
-          </aside>
+
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 pb-3 flex flex-col gap-4">
+              {navGroups.map((g) => (
+                <section key={g.title}>
+                  <p className="px-1 mb-2 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">{g.title}</p>
+                  <div className="grid grid-cols-3 gap-2.5">
+                    {g.items.map((l) => {
+                      const Icon = ICONS[l.href];
+                      const active = pathname.startsWith(l.href);
+                      return (
+                        <Link
+                          key={l.href}
+                          href={l.href}
+                          onClick={() => setSheetOpen(false)}
+                          className={cn(
+                            "flex flex-col items-center justify-start gap-2 rounded-2xl px-1.5 py-3 text-center border transition active:scale-95",
+                            active
+                              ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                              : "bg-white border-slate-200 text-slate-700"
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              "flex items-center justify-center w-10 h-10 rounded-xl shrink-0",
+                              active ? "bg-emerald-500 text-white shadow-sm" : "bg-slate-100 text-slate-500"
+                            )}
+                          >
+                            {Icon && <Icon className="w-5 h-5" />}
+                          </span>
+                          <span className="text-[12px] font-semibold leading-tight line-clamp-2 break-words">
+                            {l.label.trim()}
+                          </span>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+            </div>
+
+            <div className="shrink-0 px-4 pt-2 pb-[calc(0.75rem+env(safe-area-inset-bottom))] border-t border-slate-200 bg-white rounded-b-none">
+              <button
+                onClick={requestLogout}
+                className="flex items-center justify-center gap-2 w-full h-12 rounded-2xl bg-red-50 text-red-600 text-[15px] font-semibold active:bg-red-100 transition"
+              >
+                <LogOut className="w-5 h-5" />
+                ออกจากระบบ
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

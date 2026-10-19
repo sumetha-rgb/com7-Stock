@@ -27,5 +27,6 @@ declare module "next-auth/jwt" {
     role: Role;
     username: string;
     employeeId: string;
+    revoked?: boolean;
   }
 }

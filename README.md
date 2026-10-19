@@ -64,7 +64,7 @@
 
 ### หน้า Login
 
-มีแอนิเมชันกล่องตกและรถยกวิ่งผ่านหน้าจอ รถคันแรกมาหลังเปิดหน้า 2 วินาที คันต่อไปมาหลังคันก่อนออกจอ 5–10 วินาที (แก้ได้ในฟังก์ชัน `ForkliftEvent` ใน `src/app/login/page.tsx`) และมีข้อความ "เลยเวลางานนะครับพี่ๆ" ขึ้นหลัง 18:00 วันละครั้งต่อเบราว์เซอร์ (ปุ่ม "💬 จำลองข้อความ" ใช้ทดสอบข้อความนี้)
+มีแอนิเมชันกล่องตกและรถยกวิ่งผ่านหน้าจอ รถคันแรกมาหลังเปิดหน้า 2 วินาที คันต่อไปมาหลังคันก่อนออกจอ 5–10 วินาที (แก้ได้ในฟังก์ชัน `ForkliftEvent` ใน `src/app/login/page.tsx`) และมีข้อความ "เลยเวลางานแล้วนะครับพี่ๆ" ขึ้นหลัง 18:00 วันละครั้งต่อเบราว์เซอร์ (ปุ่ม "💬 จำลองข้อความ" ใช้ทดสอบข้อความนี้)
 
 ---
 
@@ -193,10 +193,23 @@ npm run dev
 
 | ตัวแปร | ความหมาย |
 |---|---|
-| `EMAIL_PROVIDER` | `resend` หรือ `brevo` (ไม่ตั้ง: ใช้ Resend ถ้ามี `RESEND_API_KEY` ไม่งั้นใช้ Brevo) |
+| `EMAIL_PROVIDER` | `gmail`, `resend` หรือ `brevo` (ไม่ตั้ง: ใช้ Resend ถ้ามี `RESEND_API_KEY` ไม่งั้นใช้ Brevo) |
 | `RESEND_API_KEY` · `RESEND_SENDER_EMAIL` | ค่าของ Resend |
 | `BREVO_API_KEY` · `BREVO_SENDER_EMAIL` | ค่าของ Brevo |
+| `GMAIL_CLIENT_ID` · `GMAIL_CLIENT_SECRET` · `GMAIL_REFRESH_TOKEN` · `GMAIL_FROM_EMAIL` · `GMAIL_FROM_NAME` | OAuth credentials ชื่อผู้ส่ง และบัญชีผู้ส่งของ Gmail API (ใช้บัญชีผู้ส่งระบบบัญชีเดียว) |
 | `NEXT_PUBLIC_APP_URL` | URL เว็บจริง ใช้ใส่ลิงก์ Login ในอีเมลบัญชีใหม่ |
+
+#### ตั้งค่า Gmail API
+
+1. ใช้บัญชี Gmail/Google Workspace สำหรับเป็นผู้ส่งของระบบโดยเฉพาะ และเปิด Gmail API ใน Google Cloud project
+2. ตั้ง OAuth consent screen และสร้าง OAuth Client ID ประเภท Web application
+3. ขอ OAuth refresh token ด้วย scope `https://www.googleapis.com/auth/gmail.send` และ `access_type=offline` โดยล็อกอินด้วยบัญชีผู้ส่งระบบ
+4. ตั้ง `EMAIL_PROVIDER=gmail` พร้อม `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `GMAIL_FROM_EMAIL` และ `GMAIL_FROM_NAME` ใน `.env.local` และ environment ของ Vercel
+5. เก็บ refresh token เป็นความลับ ห้าม commit ลง Git; ถ้าเป็น Google Workspace ให้ผู้ดูแลระบบอนุญาต OAuth app ตามนโยบายองค์กร
+
+ใช้ `GMAIL_FROM_EMAIL` ให้ตรงกับบัญชี Google ที่อนุญาต OAuth หรือเป็น alias ที่ตั้งค่าและยืนยันใน Gmail แล้ว ตั้ง `GMAIL_FROM_NAME=Stock` เพื่อแสดงชื่อผู้ส่งและใส่คำนำหน้า subject เป็น `Stock | ...` หากตั้ง OAuth audience เป็น External และแอปยังอยู่สถานะ Testing, refresh token สำหรับ scope Gmail อาจหมดอายุใน 7 วัน; งานใช้งานต่อเนื่องควร publish OAuth app และทำตามขั้นตอนยืนยัน scope ของ Google
+
+แนะนำให้ตรวจสอบการส่งจริงไปยัง Gmail/Outlook ก่อนเปิดใช้งาน การใช้ Gmail API ไม่ได้ยกเลิกเพดานการส่งรายวันของ Gmail และการรับเมลยังขึ้นกับการตั้งค่าโดเมน/นโยบายผู้รับ
 
 ### รายการ Event (ชีท Config)
 

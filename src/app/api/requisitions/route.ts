@@ -12,15 +12,21 @@ import {
   getEmployeeByEmployeeId,
   updateEmployeeStatus,
   returnStockItem,
+  enqueueBatchNotification,
 } from "@/lib/sheets";
 import {
   notifyRequisitionSuccess,
   notifyInsufficientStock,
   notifyOnboardingSuccess,
-  notifyBatchSummary,
 } from "@/lib/notifications";
 import { runInBackground } from "@/lib/background";
 import type { SessionUser } from "@/types";
+
+function parsePositiveCount(value: unknown): number | null {
+  if ((typeof value !== "number" && typeof value !== "string") || (typeof value === "string" && !value.trim())) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
 
 // This route reflects live stock/requisition data straight from Google
 // Sheets (return status, quantities, etc). Never let Next.js or the
@@ -65,24 +71,23 @@ export async function POST(req: NextRequest) {
 
     if (mode === "return") {
       const { logId, quantity } = body;
-      if (!logId || !quantity || quantity <= 0) {
+      const requestedQuantity = parsePositiveCount(quantity);
+      if (!logId || requestedQuantity === null) {
         return NextResponse.json({ error: "ข้อมูลไม่ครบ" }, { status: 400 });
       }
 
-      // Staff can only return items they themselves withdrew; Admin/Admin2
-      // can return on behalf of anyone (e.g. processing a return in person).
-      if (user.role === "Staff") {
-        const allLogs = await getRequisitionLogs();
-        const target = allLogs.find((l) => l.id === logId);
-        if (!target || target.userId !== user.id) {
-          return NextResponse.json(
-            { success: false, error: "คุณคืนได้เฉพาะของที่ตัวเองเบิกเท่านั้น" },
-            { status: 403 }
-          );
-        }
+      // Every role (Staff, Admin, Admin2) can only return items they
+      // themselves withdrew.
+      const myLogs = await getRequisitionLogs({ userId: user.id });
+      const target = myLogs.find((l) => l.id === logId);
+      if (!target) {
+        return NextResponse.json(
+          { success: false, error: "คุณคืนได้เฉพาะของที่ตัวเองเบิกเท่านั้น" },
+          { status: 403 }
+        );
       }
 
-      const result = await returnStockItem(logId, Number(quantity), {
+      const result = await returnStockItem(logId, requestedQuantity, {
         userId: user.id,
         userName: user.name,
       });
@@ -96,8 +101,9 @@ export async function POST(req: NextRequest) {
 
     if (mode === "general") {
       const { productId, quantity, eventName } = body;
+      const requestedQuantity = parsePositiveCount(quantity);
       const note = typeof body.note === "string" ? body.note.trim().slice(0, 500) : "";
-      if (!productId || !quantity || quantity <= 0 || !eventName?.trim()) {
+      if (!productId || requestedQuantity === null || typeof eventName !== "string" || !eventName.trim()) {
         return NextResponse.json({ error: "ข้อมูลไม่ครบ" }, { status: 400 });
       }
 
@@ -116,7 +122,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "หมวดหมู่ Event ไม่ถูกต้อง กรุณาเลือกจากรายการ" }, { status: 400 });
       }
 
-      const result = await deductStock(productId, Number(quantity), {
+      const result = await deductStock(productId, requestedQuantity, {
         userId: user.id,
         userName: user.name,
         eventName: eventName.trim(),
@@ -131,7 +137,7 @@ export async function POST(req: NextRequest) {
             notifyInsufficientStock({
               userName: user.name,
               productName: failedProductName,
-              requested: quantity,
+              requested: requestedQuantity,
               available,
             })
           );
@@ -152,7 +158,7 @@ export async function POST(req: NextRequest) {
         notifyRequisitionSuccess({
           userName: user.name,
           productName: successLog.productName,
-          quantity,
+          quantity: requestedQuantity,
           eventName: trimmedEvent,
           note,
           remaining: successLog.quantityAfter,
@@ -177,22 +183,27 @@ export async function POST(req: NextRequest) {
       const empById = new Map(emps.map((e) => [e.employeeId, e]));
       const prodById = new Map(prods.map((p) => [p.id, p]));
 
-      const peopleOut: { name: string; employeeId: string }[] = [];
+      // peopleOut keeps WHAT EACH PERSON GOT, so the digest can group people who
+      // received the same set of items (and open a new group for a different set).
+      const peopleOut: { name: string; items: { name: string; qty: number }[] }[] = [];
       // productId -> { total, perPersonQtys }
       const agg = new Map<string, { total: number; qtys: Set<number>; people: number }>();
       for (const p of people) {
         const emp = empById.get(String(p.employeeId));
         if (!emp) continue;
-        peopleOut.push({ name: emp.fullName, employeeId: emp.employeeId });
+        const mine = new Map<string, number>(); // product name -> qty for this person
         for (const it of Array.isArray(p.items) ? p.items : []) {
           const q = Math.floor(Number(it?.quantity));
           if (!prodById.has(String(it?.productId)) || !Number.isFinite(q) || q <= 0) continue;
+          const pname = prodById.get(String(it.productId))?.name || String(it.productId);
+          mine.set(pname, (mine.get(pname) || 0) + q);
           const cur = agg.get(it.productId) || { total: 0, qtys: new Set<number>(), people: 0 };
           cur.total += q;
           cur.qtys.add(q);
           cur.people += 1;
           agg.set(it.productId, cur);
         }
+        peopleOut.push({ name: emp.fullName, items: [...mine.entries()].map(([name, qty]) => ({ name, qty })) });
       }
       if (peopleOut.length === 0) {
         return NextResponse.json({ error: "ไม่พบพนักงาน" }, { status: 404 });
@@ -207,16 +218,17 @@ export async function POST(req: NextRequest) {
         .filter((f) => f && typeof f.name === "string")
         .map((f) => ({ name: String(f.name).slice(0, 80), error: String(f.error || "เบิกไม่สำเร็จ").slice(0, 120) }));
 
-      runInBackground(() =>
-        notifyBatchSummary({
-          kind,
-          requestedBy: user.name,
-          people: peopleOut,
-          items: itemsOut,
-          failed: failedOut,
-        })
-      );
-      return NextResponse.json({ success: true });
+      // Every successful requisition (even just one person) is queued (PENDING)
+      // and goes out in the 09:00 digest or via the button
+      // (see /api/notifications/digest). Nothing queued -> nothing is sent.
+      await enqueueBatchNotification({
+        kind,
+        requestedBy: user.name,
+        people: peopleOut,
+        items: itemsOut,
+        failed: failedOut,
+      });
+      return NextResponse.json({ success: true, queued: true });
     }
 
     // เบิกสำหรับกิจกรรม: give any products to an employee (new or already
@@ -231,13 +243,19 @@ export async function POST(req: NextRequest) {
       if (!employee) {
         return NextResponse.json({ error: "ไม่พบพนักงาน" }, { status: 404 });
       }
+      if (clientItems.some((item: unknown) => {
+        const value = item as { productId?: unknown; quantity?: unknown } | null;
+        return !value || typeof value.productId !== "string" || !value.productId || !Number.isSafeInteger(value.quantity) || Number(value.quantity) < 0;
+      })) {
+        return NextResponse.json({ error: "รายการสินค้า/จำนวนไม่ถูกต้อง" }, { status: 400 });
+      }
 
       const merged = new Map<string, number>();
       for (const ci of clientItems) {
-        if (ci && typeof ci.productId === "string" && Number.isFinite(ci.quantity)) {
-          const q = Math.max(0, Math.floor(ci.quantity));
-          merged.set(ci.productId, (merged.get(ci.productId) || 0) + q);
-        }
+        const q = ci.quantity;
+        const total = (merged.get(ci.productId) || 0) + q;
+        if (!Number.isSafeInteger(total)) return NextResponse.json({ error: "จำนวนสินค้ารวมเกินค่าที่รองรับ" }, { status: 400 });
+        merged.set(ci.productId, total);
       }
       const items = [...merged.entries()]
         .map(([productId, quantity]) => ({ productId, quantity }))
@@ -297,6 +315,13 @@ export async function POST(req: NextRequest) {
         );
       }
 
+      if (Array.isArray(clientItems) && clientItems.some((item: unknown) => {
+        const value = item as { productId?: unknown; quantity?: unknown } | null;
+        return !value || typeof value.productId !== "string" || !value.productId || !Number.isSafeInteger(value.quantity) || Number(value.quantity) < 0;
+      })) {
+        return NextResponse.json({ error: "รายการสินค้า/จำนวนไม่ถูกต้อง" }, { status: 400 });
+      }
+
       // The bundle is only a default. When the client sends an explicit item
       // list, that list is what gets withdrawn - any product, any quantity
       // (0 = skipped, less than the bundle default is fine, products outside
@@ -306,10 +331,9 @@ export async function POST(req: NextRequest) {
       if (Array.isArray(clientItems)) {
         const merged = new Map<string, number>();
         for (const ci of clientItems) {
-          if (ci && typeof ci.productId === "string" && Number.isFinite(ci.quantity)) {
-            const q = Math.max(0, Math.floor(ci.quantity));
-            merged.set(ci.productId, (merged.get(ci.productId) || 0) + q);
-          }
+          const total = (merged.get(ci.productId) || 0) + ci.quantity;
+          if (!Number.isSafeInteger(total)) return NextResponse.json({ error: "จำนวนสินค้ารวมเกินค่าที่รองรับ" }, { status: 400 });
+          merged.set(ci.productId, total);
         }
         items = [...merged.entries()]
           .map(([productId, quantity]) => ({ productId, quantity }))
