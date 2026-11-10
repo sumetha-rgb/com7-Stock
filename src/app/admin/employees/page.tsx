@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Nav } from "@/components/Nav";
 import type { Employee } from "@/types";
+import { byStartDateDesc } from "@/lib/utils";
 import { HopLoader } from "@/components/HopLoader";
 import { CalendarRange, Search } from "lucide-react";
 import { MobileField } from "@/components/MobileField";
@@ -37,7 +38,7 @@ export default function AdminEmployeesPage() {
             e.position.toLowerCase().includes(search.toLowerCase())
         )
         // Newest start date first
-        .sort((a, b) => (a.startDate < b.startDate ? 1 : -1)),
+        .sort(byStartDateDesc),
     [employees, search]
   );
 

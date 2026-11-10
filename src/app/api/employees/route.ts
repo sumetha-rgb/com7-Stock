@@ -5,6 +5,7 @@ import { getEmployees, createUser, appendAuditLog } from "@/lib/sheets";
 import { notifyNewUser } from "@/lib/notifications";
 import { runInBackground } from "@/lib/background";
 import type { SessionUser } from "@/types";
+import { inDateRange } from "@/lib/utils";
 import { v4 as uuidv4 } from "uuid";
 
 // Returns the newcomer roster (จาก Data Newcomer sheet). Supports optional
@@ -21,8 +22,7 @@ export async function GET(req: NextRequest) {
     const to = searchParams.get("to");
 
     let emps = await getEmployees();
-    if (from) emps = emps.filter((e) => e.startDate && e.startDate >= from);
-    if (to) emps = emps.filter((e) => e.startDate && e.startDate <= to);
+    if (from || to) emps = emps.filter((e) => inDateRange(e.startDate, from, to));
 
     return NextResponse.json(emps);
   } catch (e) {

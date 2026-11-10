@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Nav } from "@/components/Nav";
 import toast from "react-hot-toast";
 import type { Employee, EmployeeItemStatusResult, OverallReceiveState } from "@/types";
+import { byStartDateDesc } from "@/lib/utils";
 import { HopLoader } from "@/components/HopLoader";
 import { PageTransitionOverlay } from "@/components/PageTransitionOverlay";
 import { MobileField } from "@/components/MobileField";
@@ -181,7 +182,7 @@ export function EmployeeDatabaseView({ canImport }: { canImport: boolean }) {
     const q = search.trim().toLowerCase();
     return employees
       .filter((e) => !q || COLUMNS.some((c) => String(e[c.key] ?? "").toLowerCase().includes(q)))
-      .sort((a, b) => (a.startDate < b.startDate ? 1 : -1));
+      .sort(byStartDateDesc);
   }, [employees, search]);
 
   // Builds a CSV in the browser and downloads it (no extra package needed).

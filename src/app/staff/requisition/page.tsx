@@ -6,7 +6,7 @@ import { useSession } from "next-auth/react";
 import { BatchDigestCard } from "@/components/BatchDigestCard";
 import toast from "react-hot-toast";
 import type { Product, OnboardingBundle, OnboardingBundleItem, Employee } from "@/types";
-import { formatNumber } from "@/lib/utils";
+import { formatNumber, inDateRange, byStartDateDesc, toIsoDate, todayIso } from "@/lib/utils";
 import { HopLoader } from "@/components/HopLoader";
 import { PageTransitionOverlay } from "@/components/PageTransitionOverlay";
 import { Package, Search, Minus, Plus, X, UserRound, CalendarClock, CheckCircle2 } from "lucide-react";
@@ -304,25 +304,10 @@ export default function RequisitionPage() {
     }
   }, [selectedBundleId]);
 
-  // Seed each product's requested quantity. The bundle is only a starting
-  // point: bundle items start at their default amount (capped to stock),
-  // every other product starts at 0. Staff can change any of them freely,
-  // including adding products that are not in the bundle at all.
+  // เบิกสำหรับพนักงานใหม่: ทุกรายการเริ่มที่ 0 (ไม่ดึงจำนวนตั้งต้นจากชุดมาใส่ให้)
+  // — คนเบิกเลือกสินค้าและจำนวนเองทั้งหมด. Reset whenever the bundle changes.
   useEffect(() => {
-    if (!selectedBundleId) {
-      setItemQty({});
-      return;
-    }
-    setItemQty(() => {
-      const next: Record<string, number> = {};
-      for (const p of products) next[p.id] = 0;
-      for (const item of bundleItems) {
-        const stock = products.find((p) => p.id === item.productId)?.quantity ?? 0;
-        next[item.productId] = Math.min(item.quantityPerSet, stock);
-      }
-      return next;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setItemQty({});
   }, [bundleItems, selectedBundleId]);
 
   // Search box for the onboarding item list
@@ -348,7 +333,7 @@ export default function RequisitionPage() {
         p.category.toLowerCase().includes(search.toLowerCase())
     );
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIso();
   const pendingEmployees = useMemo(
     () =>
       employees
@@ -358,12 +343,11 @@ export default function RequisitionPage() {
             e.fullName.toLowerCase().includes(empSearch.toLowerCase()) ||
             e.employeeId.toLowerCase().includes(empSearch.toLowerCase())
         )
-        .filter((e) => !empFromDate || (e.startDate && e.startDate >= empFromDate))
-        .filter((e) => !empToDate || (e.startDate && e.startDate <= empToDate))
+        .filter((e) => inDateRange(e.startDate, empFromDate, empToDate))
         .sort((a, b) => {
-          const aToday = a.startDate.startsWith(today) ? 0 : 1;
-          const bToday = b.startDate.startsWith(today) ? 0 : 1;
-          return aToday - bToday;
+          const aToday = toIsoDate(a.startDate) === today ? 0 : 1;
+          const bToday = toIsoDate(b.startDate) === today ? 0 : 1;
+          return aToday - bToday || byStartDateDesc(a, b);
         }),
     [employees, empSearch, empFromDate, empToDate, today]
   );
@@ -549,9 +533,8 @@ export default function RequisitionPage() {
           e.employeeId.toLowerCase().includes(q) ||
           e.company.toLowerCase().includes(q)
       )
-      .filter((e) => !actFromDate || (e.startDate && e.startDate >= actFromDate))
-      .filter((e) => !actToDate || (e.startDate && e.startDate <= actToDate))
-      .sort((a, b) => (a.startDate < b.startDate ? 1 : -1))
+      .filter((e) => inDateRange(e.startDate, actFromDate, actToDate))
+      .sort(byStartDateDesc)
       .slice(0, 200);
   }, [employees, actSearch, actFromDate, actToDate]);
 
@@ -571,16 +554,13 @@ export default function RequisitionPage() {
     [actBundleItems, products]
   );
 
-  // Start every bundle item at its default amount (capped to stock), like the
-  // onboarding tab does. Re-runs when the bundle or stock changes.
+  // เบิกสำหรับกิจกรรม: ทุกรายการเริ่มที่ 0 — TA เป็นคนเลือกสินค้าและจำนวนเองทั้งหมด
+  // (ไม่ดึงจำนวนตั้งต้นจากชุดมาใส่ให้). Re-runs when the bundle changes.
   function seedActQty() {
-    const next: Record<string, number> = {};
-    for (const it of actProducts) next[it.productId] = Math.min(it.defaultQty, it.stock);
-    setActQty(next);
+    setActQty({});
   }
   useEffect(() => {
     if (mode === "activity") seedActQty();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actBundleItems, mode]);
 
   const actItems = useMemo(
@@ -1061,7 +1041,12 @@ export default function RequisitionPage() {
                         <UserRound className="w-4 h-4" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-slate-800 truncate">{emp.fullName}</p>
+                        <p className="text-sm font-medium text-slate-800 truncate">
+                          {emp.fullName}
+                          {emp.position && (
+                            <span className="font-normal text-slate-500"> ({emp.position})</span>
+                          )}
+                        </p>
                         <p className="text-xs text-slate-500 truncate">
                           {emp.employeeId} · {emp.company || "-"} · {emp.startDate || "-"}
                         </p>
@@ -1353,12 +1338,17 @@ export default function RequisitionPage() {
                         <UserRound className="w-4 h-4" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-slate-800 truncate">{emp.fullName}</p>
+                        <p className="text-sm font-medium text-slate-800 truncate">
+                          {emp.fullName}
+                          {emp.position && (
+                            <span className="font-normal text-slate-500"> ({emp.position})</span>
+                          )}
+                        </p>
                         <p className="text-xs text-slate-500 truncate">
                           {emp.company || "-"} · {emp.startDate || "-"}
                         </p>
                       </div>
-                      {emp.startDate.startsWith(today) && (
+                      {toIsoDate(emp.startDate) === today && (
                         <span className="flex items-center gap-1 text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded shrink-0">
                           <CalendarClock className="w-3 h-3" /> วันนี้
                         </span>

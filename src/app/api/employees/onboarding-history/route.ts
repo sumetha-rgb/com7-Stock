@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getOnboardingHistory } from "@/lib/sheets";
 import type { SessionUser } from "@/types";
+import { inDateRange } from "@/lib/utils";
 
 // Admin2-only: ประวัติการเบิกของพนักงานใหม่ — who claimed (ชื่อผู้เบิก) for
 // which newcomer, joined with that newcomer's roster info.
@@ -22,8 +23,7 @@ export async function GET(req: NextRequest) {
     const to = searchParams.get("to");
 
     let history = await getOnboardingHistory();
-    if (from) history = history.filter((h) => h.startDate && h.startDate >= from);
-    if (to) history = history.filter((h) => h.startDate && h.startDate <= to);
+    if (from || to) history = history.filter((h) => inDateRange(h.startDate, from, to));
 
     return NextResponse.json(history);
   } catch (e) {

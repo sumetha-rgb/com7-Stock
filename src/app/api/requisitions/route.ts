@@ -185,7 +185,7 @@ export async function POST(req: NextRequest) {
 
       // peopleOut keeps WHAT EACH PERSON GOT, so the digest can group people who
       // received the same set of items (and open a new group for a different set).
-      const peopleOut: { name: string; items: { name: string; qty: number }[] }[] = [];
+      const peopleOut: { name: string; employeeId: string; items: { name: string; qty: number }[] }[] = [];
       // productId -> { total, perPersonQtys }
       const agg = new Map<string, { total: number; qtys: Set<number>; people: number }>();
       for (const p of people) {
@@ -203,7 +203,7 @@ export async function POST(req: NextRequest) {
           cur.people += 1;
           agg.set(it.productId, cur);
         }
-        peopleOut.push({ name: emp.fullName, items: [...mine.entries()].map(([name, qty]) => ({ name, qty })) });
+        peopleOut.push({ name: emp.fullName, employeeId: emp.employeeId, items: [...mine.entries()].map(([name, qty]) => ({ name, qty })) });
       }
       if (peopleOut.length === 0) {
         return NextResponse.json({ error: "ไม่พบพนักงาน" }, { status: 404 });

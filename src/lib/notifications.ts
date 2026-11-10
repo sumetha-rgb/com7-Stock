@@ -952,6 +952,13 @@ function personItems(b: BatchNotification, idx: number): DigestItem[] {
   return b.items.map((it) => ({ name: it.name, qty: it.perPerson ?? Math.max(1, Math.round(it.total / n)) }));
 }
 
+// "36680 นางสาว เกียรติลักษณ์ วัฒนวิทย์สกุล" — รหัสพนักงานนำหน้าชื่อ.
+// ไม่แสดงรหัสที่ระบบสร้างเอง (NEW-xxxx) และแถวเก่าที่ยังไม่มีรหัสจะแสดงแค่ชื่อ.
+function personLabel(p: { name: string; employeeId?: string }): string {
+  const code = (p.employeeId || "").trim();
+  return code && !/^NEW-/i.test(code) ? `${code} ${p.name}` : p.name;
+}
+
 export function groupBatches(batches: BatchNotification[]): DigestGroup[] {
   const map = new Map<string, DigestGroup>();
   const ordered = [...batches].sort((a, b) => (a.createdAt > b.createdAt ? 1 : -1));
@@ -967,7 +974,7 @@ export function groupBatches(batches: BatchNotification[]): DigestGroup[] {
         g = { items, people: [] };
         map.set(key, g);
       }
-      g.people.push(p.name);
+      g.people.push(personLabel(p));
     });
   }
   return [...map.values()];
