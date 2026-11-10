@@ -515,8 +515,10 @@ export default function RequisitionPage() {
       succeeded,
       failed,
     });
-    setSelectedEmployees([]);
-    setItemQty({});
+    // เหมือนแท็บกิจกรรม: คนที่เบิกไม่สำเร็จยังเลือกค้างไว้ และถ้ามีคนไม่สำเร็จ
+    // ให้ค้างจำนวนไว้ด้วยเพื่อกดเบิกซ้ำได้ — สำเร็จทั้งหมดจึงกลับเป็น 0
+    setSelectedEmployees(failed.map((f) => f.emp));
+    if (!failed.length) setItemQty({});
   }
 
   // ---------- เบิกสำหรับกิจกรรม ----------
@@ -666,6 +668,7 @@ export default function RequisitionPage() {
     });
     // keep the people whose withdrawal failed selected so they can retry
     setActSelected(failed.map((f) => f.emp));
+    // เบิกสำเร็จทั้งหมด → จำนวนกลับเป็น 0; มีคนไม่สำเร็จ → ค้างจำนวนไว้ให้กดเบิกซ้ำได้
     if (!failed.length) seedActQty();
   }
 
@@ -699,6 +702,13 @@ export default function RequisitionPage() {
               <button
                 key={t.key}
                 onClick={(e) => {
+                  // เปลี่ยนแท็บ → ล้างจำนวนสินค้า (กลับเป็น 0) และรายชื่อพนักงานที่เลือกไว้ ทั้งสองแท็บ
+                  if (t.key !== mode) {
+                    setItemQty({});
+                    setActQty({});
+                    setSelectedEmployees([]);
+                    setActSelected([]);
+                  }
                   setMode(t.key);
                   e.currentTarget.scrollIntoView({
                     behavior: "smooth",
