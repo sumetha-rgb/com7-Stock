@@ -1288,7 +1288,33 @@ export async function getEmployees(forceRefresh = false): Promise<Employee[]> {
   }
   if (data.length < 2) return [];
   const headers = data[0];
-  return data.slice(1).map((row) => rowToEmployee(rowToObject<Record<string, string>>(headers, row)));
+  const emps = data.slice(1).map((row) => rowToEmployee(rowToObject<Record<string, string>>(headers, row)));
+
+  // The roster's "status" cell can fall out of sync with what was actually
+  // withdrawn: the newcomer sync (cron / Admin2 page) rewrites the whole
+  // sheet from a snapshot it read *before* an onboarding withdrawal landed,
+  // or fails to match a row whose name/date was edited in the source sheet,
+  // and puts the person back to PENDING. The RequisitionLog is the source of
+  // truth, so anyone with a successful onboarding withdrawal is ONBOARDED.
+  try {
+    const onboarded = await getOnboardedEmployeeIds();
+    for (const e of emps) {
+      if (e.status !== "ONBOARDED" && onboarded.has(e.employeeId)) e.status = "ONBOARDED";
+    }
+  } catch (err) {
+    console.warn("Could not read RequisitionLog to reconcile employee status", err);
+  }
+  return emps;
+}
+
+// employeeIds that have at least one successful onboarding withdrawal.
+async function getOnboardedEmployeeIds(): Promise<Set<string>> {
+  const logs = await getRequisitionLogs({ isOnboarding: true });
+  const ids = new Set<string>();
+  for (const l of logs) {
+    if (l.status === "SUCCESS" && l.employeeId) ids.add(l.employeeId.trim());
+  }
+  return ids;
 }
 
 export async function getEmployeeByEmployeeId(
@@ -1480,6 +1506,18 @@ export async function importNewcomersFromSheet(sheetUrl: string): Promise<Import
   const keyOf = (company: string, fullName: string, startDate: string) =>
     `${company.trim()}|${fullName.trim()}|${startDate.trim()}`;
   const existingByKey = new Map(existing.map((e) => [keyOf(e.company, e.fullName, e.startDate), e]));
+  // Fallbacks for when the exact key no longer matches (e.g. the start date
+  // or company was corrected in the source sheet): match by รหัสพนักงาน, then
+  // by company + name when that pair is unique. Without this the person got
+  // a fresh NEW-xxxx id and PENDING status, detached from their withdrawal.
+  const existingById = new Map(existing.map((e) => [e.employeeId, e]));
+  const nameKey = (company: string, fullName: string) => `${company.trim()}|${fullName.trim()}`;
+  const nameCounts = new Map<string, number>();
+  for (const e of existing) nameCounts.set(nameKey(e.company, e.fullName), (nameCounts.get(nameKey(e.company, e.fullName)) || 0) + 1);
+  const existingByName = new Map(
+    existing.filter((e) => nameCounts.get(nameKey(e.company, e.fullName)) === 1).map((e) => [nameKey(e.company, e.fullName), e])
+  );
+  const usedPrior = new Set<Employee>();
 
   const now = new Date().toISOString();
   const nextRows: unknown[][] = [];
@@ -1492,7 +1530,13 @@ export async function importNewcomersFromSheet(sheetUrl: string): Promise<Import
     const company = cleanField(r[idx.company]);
     const startDate = cleanField(r[idx.startDate]);
     const employeeCode = idx.employeeCode !== -1 ? cleanField(r[idx.employeeCode]) : "";
-    const prior = existingByKey.get(keyOf(company, fullName, startDate));
+    const candidates = [
+      existingByKey.get(keyOf(company, fullName, startDate)),
+      employeeCode ? existingById.get(employeeCode) : undefined,
+      existingByName.get(nameKey(company, fullName)),
+    ];
+    const prior = candidates.find((c) => c && !usedPrior.has(c));
+    if (prior) usedPrior.add(prior);
     const id = prior?.id || uuidv4();
     const employeeId = employeeCode || prior?.employeeId || `NEW-${id.slice(0, 8)}`;
     if (prior?.employeeId && prior.employeeId !== employeeId) {
