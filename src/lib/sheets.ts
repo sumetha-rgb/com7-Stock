@@ -435,7 +435,9 @@ function toCellData(value: unknown) {
   if (typeof value === "boolean") {
     return { userEnteredValue: { boolValue: value } };
   }
-  return { userEnteredValue: { stringValue: String(value ?? "") } };
+  // stringValue is always stored as plain text, so no apostrophe is needed
+  // (unlike toSheetRow) - just the Thai-time form of any ISO timestamp.
+  return { userEnteredValue: { stringValue: formatThaiTime(String(value ?? "")) } };
 }
 
 // Apply related stock, requisition-log, and audit changes in one Sheets API
