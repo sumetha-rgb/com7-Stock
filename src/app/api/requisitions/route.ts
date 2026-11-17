@@ -304,7 +304,11 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "ไม่พบพนักงาน" }, { status: 404 });
       }
 
-      if (employee.status === "ONBOARDED" && !body.force) {
+      // No override: one onboarding kit per person. Status is derived from
+      // RequisitionLog (read fresh above), so a person who already has a
+      // successful onboarding withdrawal is refused even if the roster sheet
+      // still says PENDING. Extra items for them go through เบิกสำหรับกิจกรรม.
+      if (employee.status === "ONBOARDED") {
         return NextResponse.json(
           {
             success: false,

@@ -193,6 +193,61 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 2, rateLimitOnly = 
   throw lastErr;
 }
 
+// ---- Timestamps in the sheet ----
+// The app works with ISO UTC strings internally ("2026-11-17T03:17:53.111Z":
+// sorted as text, parsed with new Date()). People reading the sheet want Thai
+// time, so every ISO timestamp is written as "17/11/2026 10:17:53" (Asia/
+// Bangkok, UTC+7, no DST) and converted back to ISO when read. Rows written
+// before this change are still ISO and are read as-is.
+const TIME_COLUMNS = new Set(["createdAt", "updatedAt", "returnedAt", "sentAt"]);
+const ISO_TS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+const SHEET_TS = /^(\d{1,2})\/(\d{1,2})\/(\d{4}) (\d{1,2}):(\d{2})(?::(\d{2}))?$/;
+const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+// ISO UTC -> "17/11/2026 10:17:53" (Thai time). Anything else is returned unchanged.
+export function formatThaiTime(iso: string): string {
+  if (!ISO_TS.test(iso)) return iso;
+  const d = new Date(Date.parse(iso) + BANGKOK_OFFSET_MS);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getUTCDate())}/${p(d.getUTCMonth() + 1)}/${d.getUTCFullYear()} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
+
+// "17/11/2026 10:17:53" (Thai time) -> ISO UTC. ISO / blank / anything else unchanged.
+function parseThaiTime(value: string): string {
+  const m = SHEET_TS.exec(String(value ?? "").trim());
+  if (!m) return value;
+  const [, dd, mm, yyyy, hh, mi, ss] = m;
+  const utc = Date.UTC(+yyyy, +mm - 1, +dd, +hh, +mi, +(ss || 0)) - BANGKOK_OFFSET_MS;
+  return Number.isNaN(utc) ? value : new Date(utc).toISOString();
+}
+
+// Applied to every row we write. The leading apostrophe keeps Sheets from
+// turning the text into a date cell (whose display would then depend on the
+// sheet's locale); it is not stored as part of the value.
+function toSheetRow(row: unknown[]): unknown[] {
+  return row.map((v) => (typeof v === "string" && ISO_TS.test(v) ? `'${formatThaiTime(v)}` : v));
+}
+
+// Applied to every full-sheet read: timestamp columns back to ISO.
+function fromSheetRows(data: string[][]): string[][] {
+  if (data.length < 2) return data;
+  const cols = data[0].map((h, i) => (TIME_COLUMNS.has(String(h).trim()) ? i : -1)).filter((i) => i !== -1);
+  if (!cols.length) return data;
+  return data.map((row, r) => {
+    if (r === 0) return row;
+    let out = row;
+    for (const c of cols) {
+      if (row[c] === undefined) continue;
+      const v = parseThaiTime(row[c]);
+      if (v !== row[c]) {
+        if (out === row) out = [...row];
+        out[c] = v;
+      }
+    }
+    return out;
+  });
+}
+
 async function getSheetData(sheetName: string, range?: string): Promise<string[][]> {
   const sheets = await getSheetsClient();
   const res = await withRetry(() =>
@@ -204,7 +259,9 @@ async function getSheetData(sheetName: string, range?: string): Promise<string[]
       { timeout: READ_TIMEOUT_MS } // never let one hung Google call block a request for 20s+
     )
   );
-  return (res.data.values as string[][]) || [];
+  const data = (res.data.values as string[][]) || [];
+  // Only a full-sheet read has the header row needed to find the time columns.
+  return range ? data : fromSheetRows(data);
 }
 
 // ---- Generic cached reader (one Google read shared by everyone) ----
@@ -278,7 +335,7 @@ async function appendRows(sheetName: string, rows: unknown[][]): Promise<void> {
             range: `'${sheetName.replace(/'/g, "''")}'!A:A`,
             valueInputOption: "USER_ENTERED",
             insertDataOption: "INSERT_ROWS",
-            requestBody: { values: rows },
+            requestBody: { values: rows.map(toSheetRow) },
           },
           { timeout: WRITE_TIMEOUT_MS }
         ),
@@ -304,7 +361,7 @@ async function updateRow(
             spreadsheetId: SPREADSHEET_ID,
             range: `${sheetName}!A${rowIndex}`,
             valueInputOption: "USER_ENTERED",
-            requestBody: { values: [values] },
+            requestBody: { values: [toSheetRow(values)] },
           },
           { timeout: WRITE_TIMEOUT_MS }
         ),
@@ -333,7 +390,7 @@ async function batchUpdateRows(
               valueInputOption: "USER_ENTERED",
               data: updates.map((u) => ({
                 range: `${sheetName}!A${u.rowIndex}`,
-                values: [u.values],
+                values: [toSheetRow(u.values)],
               })),
             },
           },
@@ -378,7 +435,9 @@ function toCellData(value: unknown) {
   if (typeof value === "boolean") {
     return { userEnteredValue: { boolValue: value } };
   }
-  return { userEnteredValue: { stringValue: String(value ?? "") } };
+  // stringValue is always stored as plain text, so no apostrophe is needed
+  // (unlike toSheetRow) - just the Thai-time form of any ISO timestamp.
+  return { userEnteredValue: { stringValue: formatThaiTime(String(value ?? "")) } };
 }
 
 // Apply related stock, requisition-log, and audit changes in one Sheets API
@@ -1057,15 +1116,16 @@ async function appendRequisitionLog(log: RequisitionLog): Promise<void> {
 // ============ Requisition Logs ============
 // Short-lived cache + in-flight de-duplication for the (large) log sheet so
 // concurrent/rapid page loads share one Google Sheets read.
-async function getLogsSheetData(): Promise<string[][]> {
-  return getSheetDataCached(SHEETS.REQUISITION_LOG, LOGS_TTL_MS);
+async function getLogsSheetData(forceRefresh = false): Promise<string[][]> {
+  return getSheetDataCached(SHEETS.REQUISITION_LOG, LOGS_TTL_MS, forceRefresh);
 }
 
 export async function getRequisitionLogs(filters?: {
   userId?: string;
   isOnboarding?: boolean;
+  forceRefresh?: boolean;
 }): Promise<RequisitionLog[]> {
-  const data = await getLogsSheetData();
+  const data = await getLogsSheetData(!!filters?.forceRefresh);
   if (data.length < 2) return [];
   const headers = data[0];
   let logs = data.slice(1).map((row) => mapLogRaw(rowToObject<Record<string, string>>(headers, row)));
@@ -1189,7 +1249,7 @@ export async function returnStockItem(
       actorName: actor.userName,
       action: "RETURN_ITEM",
       targetUserId: currentLog.userId,
-      detail: `คืน ${currentLog.productName} จำนวน ${quantity} ${product.unit} (เบิกโดย ${currentLog.userName} เมื่อ ${currentLog.createdAt})`,
+      detail: `คืน ${currentLog.productName} จำนวน ${quantity} ${product.unit} (เบิกโดย ${currentLog.userName} เมื่อ ${formatThaiTime(currentLog.createdAt)})`,
     };
     await applyAtomicSheetChanges(
       [
@@ -1297,7 +1357,7 @@ export async function getEmployees(forceRefresh = false): Promise<Employee[]> {
   // and puts the person back to PENDING. The RequisitionLog is the source of
   // truth, so anyone with a successful onboarding withdrawal is ONBOARDED.
   try {
-    const onboarded = await getOnboardedEmployeeIds();
+    const onboarded = await getOnboardedEmployeeIds(forceRefresh);
     for (const e of emps) {
       if (e.status !== "ONBOARDED" && onboarded.has(e.employeeId)) e.status = "ONBOARDED";
     }
@@ -1308,8 +1368,10 @@ export async function getEmployees(forceRefresh = false): Promise<Employee[]> {
 }
 
 // employeeIds that have at least one successful onboarding withdrawal.
-async function getOnboardedEmployeeIds(): Promise<Set<string>> {
-  const logs = await getRequisitionLogs({ isOnboarding: true });
+// forceRefresh skips the cache - used by the "already withdrawn" check before
+// an onboarding withdrawal, which must see a withdrawal made seconds ago.
+async function getOnboardedEmployeeIds(forceRefresh = false): Promise<Set<string>> {
+  const logs = await getRequisitionLogs({ isOnboarding: true, forceRefresh });
   const ids = new Set<string>();
   for (const l of logs) {
     if (l.status === "SUCCESS" && l.employeeId) ids.add(l.employeeId.trim());
@@ -1565,7 +1627,7 @@ export async function importNewcomersFromSheet(sheetUrl: string): Promise<Import
     spreadsheetId: SPREADSHEET_ID,
     range: `${SHEETS.DATA_NEWCOMER}!A1`,
     valueInputOption: "USER_ENTERED",
-    requestBody: { values: [HEADERS["Data Newcomer"], ...nextRows] },
+    requestBody: { values: [HEADERS["Data Newcomer"], ...nextRows.map(toSheetRow)] },
   });
   // Only when the roster got shorter: wipe the leftover old rows below it.
   if (existing.length > nextRows.length) {
