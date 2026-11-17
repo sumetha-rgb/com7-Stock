@@ -456,6 +456,7 @@ export default function RequisitionPage() {
     setSubmitting(true);
     const succeeded: Employee[] = [];
     const failed: { emp: Employee; error: string }[] = [];
+    const alreadyDone: Employee[] = [];
     // Never one card per person: everything is queued and announced as ONE
     // summary (09:00 auto or the send button) - even if only one person today.
     const batch = true;
@@ -473,7 +474,6 @@ export default function RequisitionPage() {
             mode: "onboarding",
             bundleId: selectedBundleId,
             employeeId: emp.employeeId,
-            force: true,
             allowPartial: true,
             notify: !batch,
             items,
@@ -489,6 +489,9 @@ export default function RequisitionPage() {
               ? items.filter((i) => results.some((r) => r.productId === i.productId && r.success))
               : items,
           });
+        } else if (data.alreadyOnboarded) {
+          // ระบบพบว่าเคยเบิกชุดพนักงานใหม่ไปแล้ว — ไม่ตัดสต็อกซ้ำ
+          alreadyDone.push(emp);
         } else {
           failed.push({ emp, error: data.error || "เบิกไม่สำเร็จ" });
         }
@@ -499,13 +502,22 @@ export default function RequisitionPage() {
 
     setSubmitting(false);
     if (batch && okItemsByEmp.length) sendBatchSummary("onboarding", okItemsByEmp, failed);
-    if (succeeded.length) {
+    const nowOnboarded = [...succeeded, ...alreadyDone];
+    if (nowOnboarded.length) {
       setEmployees((prev) =>
         prev.map((e) =>
-          succeeded.some((s) => s.employeeId === e.employeeId) ? { ...e, status: "ONBOARDED" } : e
+          nowOnboarded.some((s) => s.employeeId === e.employeeId) ? { ...e, status: "ONBOARDED" } : e
         )
       );
-      loadProducts();
+    }
+    if (succeeded.length) loadProducts();
+    if (alreadyDone.length) {
+      toast(
+        `ไม่ได้เบิกซ้ำ ${alreadyDone.length} คน เพราะเคยเบิกชุดพนักงานใหม่ไปแล้ว: ${alreadyDone
+          .map((e) => e.fullName)
+          .join(", ")}`,
+        { duration: 10000, icon: "⚠️" }
+      );
     }
     setResultPopup({
       items: items.map((i) => ({
